@@ -17,6 +17,8 @@ const char *nsh_error_str(NshError e) {
         return "not found";
     case NSH_ERR_INVALID:
         return "invalid argument";
+    case NSH_EOF:
+        return "end of input";
     }
     return "unknown error";
 }
