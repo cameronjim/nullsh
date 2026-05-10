@@ -23,7 +23,8 @@ DBG_BIN := $(BUILD)/nullsh-debug
 CORE_TEST_OBJS := $(BUILD)/debug/src/alloc/alloc.o $(BUILD)/debug/src/util/error.o \
                   $(BUILD)/debug/src/util/str.o $(BUILD)/debug/src/util/vec.o \
                   $(BUILD)/debug/src/shell/lexer.o $(BUILD)/debug/src/shell/expand.o \
-                  $(BUILD)/debug/src/shell/history.o $(BUILD)/debug/src/shell/parser.o
+                  $(BUILD)/debug/src/shell/history.o $(BUILD)/debug/src/shell/parser.o \
+                  $(BUILD)/debug/src/shell/builtin.o
 
 UNIT_TEST_SRCS := $(shell find src -name '*_test.c')
 SELF_TEST_SRCS := $(sort $(wildcard tests/*.c))
