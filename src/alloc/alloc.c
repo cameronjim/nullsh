@@ -25,6 +25,7 @@
 
 #define CANARY_HEAD ((uint64_t)0x4e554c4c53484421ull)
 #define CANARY_TAIL ((uint64_t)0x21444853484f4c45ull)
+#define CANARY_FREED ((uint64_t)0x46524545444f4d21ull)
 #define POISON_BYTE 0xDD
 
 // Sits immediately before the payload; 16 bytes so the payload stays 16-aligned.
@@ -59,6 +60,14 @@ static void die_out_of_memory(size_t size) {
 
 static void die_corrupt(const char *side, const void *payload) {
     fprintf(stderr, "nullsh: heap corruption detected: %s canary at %p\n", side,
+            payload);
+    abort();
+}
+
+static void die_double_free(const void *payload) {
+    fprintf(stderr,
+            "nullsh: heap corruption detected: block already freed (double "
+            "free) at %p\n",
             payload);
     abort();
 }
@@ -129,6 +138,9 @@ static void guard_write(void *payload, size_t requested) {
 static void guard_check(void *payload) {
     const Guard *g = guard_of(payload);
     uint64_t tail = 0;
+    if (g->canary == CANARY_FREED) {
+        die_double_free(payload);
+    }
     if (g->canary != CANARY_HEAD) {
         die_corrupt("prefix (underflow)", payload);
     }
@@ -155,6 +167,8 @@ static void *block_new(int slot, size_t requested) {
 
 static void block_release(int slot, void *payload) {
     Guard *g = guard_of(payload);
+    // Firstfit leaves the guard alone on free, so a second free lands on this marker.
+    g->canary = CANARY_FREED;
     memset(payload, POISON_BYTE, g->requested);
     STRATEGIES[slot]->free_block(&g_heap.slot[slot].arena, g);
     g_heap.total_frees++;
