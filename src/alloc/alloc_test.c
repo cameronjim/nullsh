@@ -1,5 +1,4 @@
-// Unit tests for the allocator wrappers, including the size-0 contract that
-// the header promises.
+// Tests for the allocator wrappers.
 
 #include "alloc.h"
 
@@ -54,8 +53,6 @@ TEST(free_of_null_is_safe) {
     ASSERT_TRUE(1);
 }
 
-// Documented contract: a size-0 request yields a unique, writable, freeable
-// block of at least one byte. It never returns NULL.
 TEST(zero_size_requests_return_unique_writable_blocks) {
     unsigned char *a = nsh_malloc(0);
     unsigned char *b = nsh_malloc(0);
@@ -75,8 +72,6 @@ TEST(zero_size_requests_return_unique_writable_blocks) {
     nsh_free(c);
 }
 
-// Documented contract: realloc to 0 shrinks the block, it does not free it,
-// so the caller still owns a valid pointer.
 TEST(realloc_to_zero_returns_a_live_block) {
     unsigned char *p = nsh_malloc(32);
     p = nsh_realloc(p, 0);

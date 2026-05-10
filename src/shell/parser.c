@@ -1,6 +1,4 @@
-// Parser: one left-to-right pass over the token list. A command accumulates
-// words and redirects until a pipe closes it; the grammar is small enough that
-// no lookahead beyond the word after a redirect operator is needed.
+// Parser: one pass over the token list, building commands and redirects.
 
 #include "parser.h"
 
@@ -48,9 +46,7 @@ static bool is_redir(TokenKind k) {
            k == TOK_REDIR_ERR;
 }
 
-// Takes ownership of target either way: on a duplicate slot it is freed here,
-// so the caller never has to clean up after a rejected redirect. > and >> share
-// the redir_out slot, which is what makes "> a >> b" a duplicate.
+// Takes ownership of target either way; > and >> share the redir_out slot.
 static NshError cmd_set_redir(Command *c, TokenKind kind, Token *target) {
     Token **slot;
     if (kind == TOK_REDIR_IN) {
@@ -71,15 +67,12 @@ static NshError cmd_set_redir(Command *c, TokenKind kind, Token *target) {
     return NSH_OK;
 }
 
-// A command is only real once it holds an argv word. Redirects alone are a
-// syntax error, so this is the test both the pipe case and the tail use.
+// Redirects alone are not a command, so argv words are the test.
 static bool cmd_has_argv(const Command *c) {
     return c != NULL && c->words.len > 0;
 }
 
-// The word after a redirect operator. Claims the slot in toks so the shared
-// cleanup pass does not double free it. Returns NULL when the next token is
-// missing or is not a word, which is the caller's syntax error.
+// Claims the slot in toks so the shared cleanup pass cannot double free it.
 static Token *take_redir_target(Vec *toks, size_t *i) {
     if (*i + 1 >= toks->len) {
         return NULL;
@@ -94,9 +87,7 @@ static Token *take_redir_target(Vec *toks, size_t *i) {
 }
 
 NshError parser_parse(TokenList *tl, Pipeline *out) {
-    // Take the tokens away from tl up front. From here on this function owns
-    // every one of them, and tl is already the valid empty list it has to be
-    // on both the success and the error path.
+    // Owning the tokens up front leaves tl valid and empty on every path.
     Vec toks = tl->tokens;
     vec_init(&tl->tokens);
 
@@ -154,7 +145,6 @@ NshError parser_parse(TokenList *tl, Pipeline *out) {
 
     if (err == NSH_OK) {
         if (cur != NULL) {
-            // A trailing command must have argv words, not just redirects.
             if (cmd_has_argv(cur)) {
                 vec_push(&out->cmds, cur);
                 cur = NULL;

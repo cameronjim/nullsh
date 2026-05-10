@@ -1,5 +1,4 @@
-// nullsh entry point. The REPL itself: prompt, read, lex, parse, execute, and
-// the history file that carries lines from one run into the next.
+// nullsh entry point: prompt, read, lex, parse, execute, and the history file.
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -20,7 +19,7 @@
 #define HISTORY_FILE "/.nullsh_history"
 #define CWD_MAX 4096
 
-// $HOME/.nullsh_history, or NULL when HOME says nothing. Caller nsh_frees it.
+// NULL when HOME says nothing. Caller nsh_frees the result.
 static char *history_path(void) {
     const char *home = getenv("HOME");
     if (home == NULL || home[0] == '\0') {
@@ -35,8 +34,7 @@ static char *history_path(void) {
     return out;
 }
 
-// "nullsh:~/code$ ". The tilde replaces HOME only on a whole path component,
-// so /homework never shows up as ~work.
+// The tilde replaces HOME only on a whole path component, never in /homework.
 static void print_prompt(void) {
     char cwd[CWD_MAX];
     const char *home = getenv("HOME");
@@ -57,7 +55,7 @@ int main(void) {
     history_init(&sh.history, HISTORY_CAP);
     char *hist_file = history_path();
     if (hist_file != NULL) {
-        // A first run has no file yet, and that is not worth a word.
+        // A first run has no file yet, which is not an error.
         history_load(&sh.history, hist_file);
     }
 
@@ -87,8 +85,7 @@ int main(void) {
             continue;
         }
 
-        // History records what was typed, so a line that fails to parse is
-        // still there to recall and fix.
+        // Recorded before parsing, so a bad line can still be recalled.
         history_add(&sh.history, line.data);
         if (lexer_scan(line.data, &tl) != NSH_OK ||
             parser_parse(&tl, &pl) != NSH_OK) {

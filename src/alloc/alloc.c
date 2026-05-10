@@ -1,14 +1,11 @@
-// Checked wrappers over libc malloc. This file is the single exception to the
-// rule that nullsh never calls libc allocation directly. Phase 2 swaps the
-// bodies for a real allocator without touching a single call site.
+// Checked wrappers over libc malloc, the one place libc allocation is called.
 
 #include "alloc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 
-// A zero-size request still hands back a distinct writable block, which keeps
-// callers from having to special case empty strings and empty arrays.
+// A zero-size request still hands back a distinct writable block.
 static size_t at_least_one(size_t size) { return size == 0 ? 1 : size; }
 
 static void die_out_of_memory(size_t size) {
@@ -28,8 +25,7 @@ void *nsh_malloc(size_t size) {
 void *nsh_calloc(size_t count, size_t size) {
     size_t n = count == 0 ? 1 : count;
     size_t each = at_least_one(size);
-    // calloc does the overflow check itself and returns NULL on wraparound,
-    // which lands in the same abort path below.
+    // calloc returns NULL on its own overflow check, so wraparound aborts too.
     void *p = calloc(n, each);
     if (p == NULL) {
         die_out_of_memory(n * each);

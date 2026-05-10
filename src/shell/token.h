@@ -1,6 +1,4 @@
-// Token structures shared by the lexer (producer), expander, and parser
-// (consumers). Construction and destruction live in lexer.c; the consumers
-// only read these.
+// Token structures shared by the lexer, the expander and the parser.
 
 #pragma once
 
@@ -18,8 +16,7 @@ typedef enum {
     TOK_AMP            // &
 } TokenKind;
 
-// One quoting run inside a word. "a"'b'c is three segments; expansion applies
-// only where expand is true (bare text and double quotes, never single quotes).
+// One quoting run inside a word: "a"'b'c is three segments.
 typedef struct {
     char *text;   // nsh-allocated, NUL terminated, may be empty for ""
     bool expand;
@@ -34,7 +31,7 @@ typedef struct {
     Vec tokens;  // Token*
 } TokenList;
 
-// Frees a token and everything it owns. Implemented in lexer.c.
+// Frees everything the token owns. Implemented in lexer.c.
 void token_free(Token *t);
 
 // Frees every token and the list's storage. Safe on a zeroed list.

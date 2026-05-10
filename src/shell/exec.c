@@ -1,7 +1,4 @@
-// Execution. One command per call in phase 1: expand the words, dispatch to a
-// builtin if the name is one, otherwise fork and let the child walk PATH by
-// hand. The child never returns to the REPL; every failure path there ends in
-// _exit so a half-built shell can never appear twice.
+// Execution: expand the words, then run a builtin or fork, search PATH, exec.
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -23,20 +20,17 @@
 #include "../util/str.h"
 #include "../util/vec.h"
 
-// execve takes the environment explicitly. This is the one the C library keeps
-// in step with setenv, which is what the export builtin writes to.
+// The environment setenv keeps in step, which is what execve must be handed.
 extern char **environ;
 
-// The two statuses every shell agrees on for a command that never ran.
+// The statuses every shell uses for a command that never ran.
 #define STATUS_NOT_FOUND 127
 #define STATUS_NOT_EXEC 126
 
-// An expansion that cannot be resolved is a usage error, not a failed command.
+// A bad expansion is a usage error, not a failed command.
 #define STATUS_BAD_SUBST 2
 
-// The phase 1 executor runs exactly one plain foreground command. Anything the
-// parser accepted but this phase cannot run yet is named here, so the user
-// learns when it arrives instead of watching it be silently dropped.
+// Names what phase 1 cannot run yet, so nothing is silently dropped.
 static const char *unsupported_reason(const Pipeline *pl) {
     if (pl->cmds.len > 1) {
         return "pipes arrive in phase 3";
@@ -64,8 +58,7 @@ static void argv_free(char **argv, int argc) {
     nsh_free(argv);
 }
 
-// Expands every word of c into a fresh NULL terminated argv. On failure
-// nothing is handed back and nothing is left allocated.
+// On failure nothing is handed back and nothing is left allocated.
 static NshError build_argv(const Command *c, int last_status, char ***out,
                            int *out_argc) {
     size_t n = c->words.len;
@@ -89,14 +82,14 @@ static NshError build_argv(const Command *c, int last_status, char ***out,
     return NSH_OK;
 }
 
-// Child side only. Prints the one line a shell owes the user and leaves.
+// Child side only: prints one line and leaves.
 static void die_child(const char *name, const char *reason, int status) {
     fprintf(stderr, "nullsh: %s: %s\n", name, reason);
     fflush(stderr);
     _exit(status);
 }
 
-// A name holding a slash names a file directly, so PATH never enters into it.
+// A name holding a slash is a path, so PATH is not searched.
 static void exec_direct(char **argv) {
     execve(argv[0], argv, environ);
     if (errno == ENOENT) {
@@ -105,9 +98,7 @@ static void exec_direct(char **argv) {
     die_child(argv[0], strerror(errno), STATUS_NOT_EXEC);
 }
 
-// Walks PATH left to right, calling execve on every candidate. The search is
-// hand rolled rather than execvp because the error accounting is the point:
-// only a search that hit nothing but permission failures reports 126.
+// Hand rolled rather than execvp so only all-permission failures report 126.
 static void exec_search_path(char **argv) {
     const char *path = getenv("PATH");
     if (path == NULL) {
@@ -125,7 +116,7 @@ static void exec_search_path(char **argv) {
 
         str_clear(&cand);
         if (len == 0) {
-            // POSIX: an empty PATH element means the current directory.
+            // POSIX: an empty PATH element is the current directory.
             str_push(&cand, '.');
         } else {
             str_append_n(&cand, p, len);
@@ -137,8 +128,7 @@ static void exec_search_path(char **argv) {
         if (errno == EACCES) {
             denied = true;
         } else if (errno != ENOENT && errno != ENOTDIR) {
-            // The file is there and is not runnable for some other reason,
-            // ENOEXEC being the common one. Searching on would only hide it.
+            // ENOEXEC and the like: the file is there, so stop searching.
             fatal = errno;
             break;
         }
@@ -159,8 +149,7 @@ static void exec_search_path(char **argv) {
     die_child(argv[0], "command not found", STATUS_NOT_FOUND);
 }
 
-// Blocks until pid is gone and turns the wait status into a shell status. A
-// signal that lands on the shell while it waits must not abandon the child.
+// waitpid is retried on EINTR so a signal never abandons the child.
 static int wait_for_child(pid_t pid) {
     int status = 0;
     while (waitpid(pid, &status, 0) < 0) {
@@ -179,8 +168,7 @@ static int wait_for_child(pid_t pid) {
 }
 
 static int run_external(char **argv) {
-    // Buffered output belongs to the shell alone. Flushing first stops the
-    // child from inheriting a copy and printing it a second time.
+    // Flush first, or the child inherits the buffers and reprints them.
     fflush(NULL);
 
     pid_t pid = fork();
@@ -225,8 +213,7 @@ NshError exec_pipeline(Shell *sh, Pipeline *pl) {
         return NSH_OK;
     }
     if (argv[0][0] == '\0') {
-        // Every word expanded away. There is no name to look up, and forking
-        // to discover that would only cost a process.
+        // Every word expanded away, so there is no name to look up.
         fprintf(stderr, "nullsh: : command not found\n");
         sh->last_status = STATUS_NOT_FOUND;
         argv_free(argv, argc);

@@ -1,6 +1,4 @@
-// One line at a time out of a FILE and into a Str. Reads byte by byte so a
-// NUL in the middle of a line is kept rather than ending the line, which is
-// what getline does too.
+// Reads one line at a time out of a FILE and into a Str.
 
 #include "line.h"
 
@@ -10,8 +8,7 @@ NshError line_read(FILE *in, Str *out) {
     for (;;) {
         int c = fgetc(in);
         if (c == EOF) {
-            // EOF and error share the same return value, so ask the stream
-            // which one actually happened.
+            // EOF and error share a return value, so ask which one happened.
             if (ferror(in)) {
                 return NSH_ERR_IO;
             }

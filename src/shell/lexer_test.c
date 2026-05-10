@@ -1,6 +1,4 @@
-// Unit tests for the lexer. The lexer decides word boundaries, operator
-// shapes, and what expansion is later allowed to touch, so every rule gets its
-// own case and the segment structure is asserted, not just the joined text.
+// Tests for the lexer, asserting segment structure and not just joined text.
 
 #include "lexer.h"
 
@@ -114,7 +112,6 @@ TEST(append_wins_over_two_single_redirects) {
     token_list_free(&tl);
 }
 
-// Longest match runs left to right, so three > are an append plus a single.
 TEST(three_redirect_chars_are_append_then_single) {
     TokenList tl = tl_zero();
     ASSERT_EQ(lexer_scan(">>>", &tl), NSH_OK);
@@ -170,8 +167,7 @@ TEST(redir_err_after_an_operator) {
     token_list_free(&tl);
 }
 
-// The 2 is glued to a word, so it is ordinary text and the > is a plain
-// stdout redirect.
+// The 2 is glued to a word, so it is text and the > is a plain redirect.
 TEST(digit_inside_a_word_is_not_a_redirect) {
     TokenList tl = tl_zero();
     ASSERT_EQ(lexer_scan("a2>b", &tl), NSH_OK);
@@ -213,8 +209,7 @@ TEST(bare_two_without_a_redirect_is_a_word) {
     token_list_free(&tl);
 }
 
-// There is no append-to-stderr token, so 2>> is the stderr redirect followed
-// by a leftover stdout redirect. The parser rejects the dangling one.
+// There is no append-to-stderr token, so 2>> is 2> plus a leftover >.
 TEST(redir_err_does_not_absorb_a_second_gt) {
     TokenList tl = tl_zero();
     ASSERT_EQ(lexer_scan("2>>f", &tl), NSH_OK);
@@ -244,7 +239,7 @@ TEST(single_quotes_have_no_escapes) {
     token_list_free(&tl);
 }
 
-// A backslash cannot protect the closing quote: 'a\' is the word a\ .
+// A backslash cannot protect the closing single quote.
 TEST(backslash_does_not_escape_the_closing_single_quote) {
     TokenList tl = tl_zero();
     ASSERT_EQ(lexer_scan("'a\\'", &tl), NSH_OK);
@@ -430,7 +425,6 @@ TEST(escaped_closing_double_quote_leaves_it_unterminated) {
     token_list_free(&tl);
 }
 
-// Everything already tokenized has to be released, not handed back.
 TEST(syntax_error_discards_earlier_tokens) {
     TokenList tl = tl_zero();
     ASSERT_EQ(lexer_scan("a b c | d 'oops", &tl), NSH_ERR_SYNTAX);

@@ -1,5 +1,4 @@
-// Unit tests for the line reader. Input comes from tmpfile(), which is plain
-// ISO C, so nothing here needs a feature test macro.
+// Tests for the line reader.
 
 #include "line.h"
 
@@ -9,8 +8,7 @@
 #include "../alloc/alloc.h"
 #include "../../tests/harness.h"
 
-// Writes content into an anonymous temp file and rewinds it. Returns NULL only
-// if the platform refuses to give us a temp file at all.
+// Returns NULL only if the platform refuses to give us a temp file at all.
 static FILE *stream_of(const char *content, size_t n) {
     FILE *f = tmpfile();
     if (f == NULL) {
@@ -57,8 +55,7 @@ TEST(reads_several_lines_in_order) {
     fclose(f);
 }
 
-// A bare newline is a real line, not end of input. The REPL relies on this to
-// tell "user pressed enter" from "user pressed Ctrl-D".
+// A bare newline is a line, not EOF: that is enter versus Ctrl-D.
 TEST(an_empty_line_reads_as_ok_with_an_empty_string) {
     FILE *f = stream_of_cstr("\n");
     ASSERT_TRUE(f != NULL);
@@ -131,8 +128,6 @@ TEST(eof_keeps_returning_eof) {
     fclose(f);
 }
 
-// out is cleared before anything is read, so leftovers from the previous line
-// can never leak into the next one, not even on EOF.
 TEST(out_is_cleared_before_reading) {
     FILE *f = stream_of_cstr("fresh\n");
     ASSERT_TRUE(f != NULL);
@@ -220,12 +215,11 @@ TEST(high_bytes_survive_unchanged) {
     fclose(f);
 }
 
-// A directory opens fine on Linux but every read fails, which is the simplest
-// way to reach the ferror path without mocking stdio.
+// A directory opens but never reads, the simplest way to reach ferror.
 TEST(a_read_error_reports_io) {
     FILE *f = fopen(".", "r");
     if (f == NULL) {
-        // Some platforms refuse the open outright. Nothing to check here.
+        // Some platforms refuse the open outright.
         ASSERT_TRUE(1);
         return;
     }
