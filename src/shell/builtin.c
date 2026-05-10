@@ -1,4 +1,4 @@
-// The six builtins and the static table that maps a name to one of them.
+// The seven builtins and the static table that maps a name to one of them.
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "../alloc/alloc.h"
+#include "../alloc/heap_builtin.h"
 
 // getcwd needs a caller buffer, and a longer path fails with ERANGE.
 #define CWD_MAX 4096
@@ -153,6 +154,7 @@ static int bi_help(Shell *sh, int argc, char **argv) {
           "                   a single - means $OLDPWD\n"
           "  exit [status]    leave the shell, default is the last status\n"
           "  export NAME=VAL  set a variable for the shell and its children\n"
+          "  heap [args]      allocator stats, strategy [NAME], or dump\n"
           "  help             print this list\n"
           "  history          print the command history, oldest first\n"
           "  unset NAME       remove a variable from the environment\n",
@@ -232,8 +234,9 @@ typedef struct {
 } BuiltinEntry;
 
 static const BuiltinEntry BUILTINS[] = {
-    {"cd", bi_cd},         {"exit", bi_exit},       {"export", bi_export},
-    {"help", bi_help},     {"history", bi_history}, {"unset", bi_unset},
+    {"cd", bi_cd},          {"exit", bi_exit}, {"export", bi_export},
+    {"heap", heap_builtin}, {"help", bi_help}, {"history", bi_history},
+    {"unset", bi_unset},
 };
 
 BuiltinFn builtin_lookup(const char *name) {

@@ -1,6 +1,6 @@
 # nullsh architecture
 
-Updated at the end of every phase. Current as of: Phase 1 (shell core).
+Updated at the end of every phase. Current as of: Phase 2 (allocator).
 
 ## Big picture
 
@@ -20,7 +20,7 @@ The learning tools (`inspect`, `netmon`, `emu`, `heap`) are builtins. They live 
 
 | Directory | Owns | Status |
 |---|---|---|
-| `src/alloc/` | nsh_malloc/free/realloc/calloc, later strategies + heap builtin | libc wrapper |
+| `src/alloc/` | nsh_* over mmap arenas, firstfit + buddy strategies, guard canaries, heap builtin | done |
 | `src/util/` | Str, Vec, line reader, NshError | done |
 | `src/shell/` | lexer, expand, parser, exec, builtins, history; jobs/signals/redirect later | Phase 1 done |
 | `src/inspect/` | ELF parsing and printing | Phase 5 |
@@ -39,6 +39,9 @@ The learning tools (`inspect`, `netmon`, `emu`, `heap`) are builtins. They live 
 - **Expansion happens at execution time, not parse time.** The parser stores unexpanded word tokens; exec expands them against the current environment and `$?`. No word splitting after expansion: a variable holding spaces stays one argv entry (a documented nullsh simplification).
 - **The parser consumes the token list.** Word tokens move into Command structs, operator tokens are freed, and the list is left valid and empty. One owner at every moment, which is why the suite stays clean under ASan.
 - **PATH search is hand rolled in the child.** Not execvp: the error accounting is the lesson. Only a search that hit nothing but EACCES reports 126; a non-runnable file (ENOEXEC) stops the search rather than being masked as not found.
+- **One arena per strategy, frees route by address.** `heap strategy buddy` switches where new allocations come from; existing blocks free back to whichever arena contains them. No memory ever moves, so live pointers stay valid across a switch.
+- **The allocator guards itself because ASan cannot.** ASan interposes libc malloc, which nullsh no longer uses, so alloc.c wraps every block in canaries (checked on free and realloc, abort on mismatch) and poisons freed payloads with 0xDD. The suite proves both by corrupting blocks in sacrificial forked children.
+- **make test runs everything twice**, once per strategy via NSH_ALLOC_STRATEGY, so every shell test doubles as an allocator test.
 
 ## Build
 
