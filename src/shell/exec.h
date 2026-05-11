@@ -7,5 +7,5 @@
 
 #include "../util/error.h"
 
-// Sets sh->last_status and borrows pl. What phase 1 cannot run is status 1.
+// Sets sh->last_status and borrows pl. Background jobs wait for phase 4.
 NshError exec_pipeline(Shell *sh, Pipeline *pl);
