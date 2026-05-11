@@ -1,6 +1,6 @@
 #!/bin/sh
 # End to end tests for the phase 1 shell: real commands, expansion, builtins,
-# exit status, the background refusal, and history that survives a run.
+# exit status, backgrounding, and history that survives a run.
 # Usage: 01_shell_core.sh <path to nullsh binary>, supplied by make test.
 
 set -u
@@ -94,10 +94,17 @@ else
     fail=1
 fi
 
-# 10. Background gets the phase 4 message.
-printf 'echo a &\n' | run
-check_contains "background refusal names phase 4" "$tmp/err" \
-    "job control arrives in phase 4"
+# 10. Background announces the job and runs it.
+printf 'echo a > %s/bg_line &\nsleep 0.4\necho $?\n' "$tmp" | run
+check_contains "background announces the job id" "$tmp/err" "^\[1\] [0-9]"
+check "background leaves 0 behind" "$(tail -n 1 "$tmp/out")" "0"
+check_contains "background job is announced done" "$tmp/out" "Done"
+if [ -f "$tmp/bg_line" ]; then
+    check "the background command really ran" "$(cat "$tmp/bg_line")" "a"
+else
+    echo "  FAIL background command did not create $tmp/bg_line"
+    fail=1
+fi
 
 # 11. A syntax error is reported and sets 2, and the shell keeps going.
 printf 'echo "unclosed\necho $?\n' | run

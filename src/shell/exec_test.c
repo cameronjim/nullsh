@@ -10,10 +10,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
+#include "jobs.h"
 #include "lexer.h"
 #include "parser.h"
+#include "signals.h"
 
 #include "../util/vec.h"
 #include "../../tests/harness.h"
@@ -38,6 +42,11 @@ static void setup(void) {
     g_sh.last_status = 0;
     g_sh.want_exit = false;
     g_sh.exit_code = 0;
+    // No terminal in the harness, so the tcsetpgrp half of the dance is skipped.
+    g_sh.interactive = false;
+    g_sh.tty_fd = -1;
+    g_sh.shell_pgid = getpgrp();
+    jobs_init();
     if (getcwd(g_cwd, sizeof g_cwd) == NULL) {
         fprintf(stderr, "exec_test: getcwd failed\n");
         exit(1);
@@ -59,6 +68,36 @@ static void teardown(void) {
         fprintf(stderr, "exec_test: could not remove %s\n", g_tmp);
     }
     history_free(&g_sh.history);
+    jobs_free_all();
+}
+
+static long now_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+static void nap_ms(long ms) {
+    struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
+    nanosleep(&ts, NULL);
+}
+
+// Exactly what main.c does before each prompt, minus the prompt. A NULL out
+// still has to prune, and jobs_reap_notify only prunes what it can print.
+static void reap_cycle(FILE *out) {
+    signals_chld_take();
+    int status = 0;
+    pid_t pid;
+    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
+        jobs_update(pid, status);
+    }
+    FILE *sink = (out != NULL) ? out : fopen("/dev/null", "w");
+    jobs_reap_notify(sink);
+    if (sink != NULL && sink != out) {
+        fclose(sink);
+    }
 }
 
 // The buffer is static and reused, so only one path at a time.
@@ -491,17 +530,128 @@ TEST(a_six_stage_pipeline_closes_every_fd) {
     ASSERT_STR_EQ(body, "deep\n");
 }
 
-// Phase 4 limits
+// Job control
 
-TEST(background_is_refused_without_running_anything) {
+// The whole point of &: the prompt comes back while the child is still alive.
+TEST(a_background_job_returns_at_once_and_lands_in_the_table) {
+    int saved = stderr_off();
+    long t0 = now_ms();
+    int status = run("sleep 0.5 &");
+    long spent = now_ms() - t0;
+    stderr_on(saved);
+
+    ASSERT_EQ(status, 0);
+    ASSERT_EQ(jobs_count(), 1);
+    ASSERT_TRUE(spent < 50);
+
+    // A reap cycle before the child is done leaves the job running.
+    reap_cycle(NULL);
+    ASSERT_EQ(jobs_count(), 1);
+
+    nap_ms(700);
+    char path[SCRATCH_BUF];
+    snprintf(path, sizeof path, "%s/notify.txt", g_tmp);
+    FILE *f = fopen(path, "w");
+    ASSERT_TRUE(f != NULL);
+    reap_cycle(f);
+    fclose(f);
+
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_EQ(jobs_count(), 0);
+    ASSERT_TRUE(strstr(body, "Done") != NULL);
+    ASSERT_TRUE(strstr(body, "sleep 0.5 &") != NULL);
+}
+
+TEST(a_background_pipeline_still_runs_every_stage) {
     char line[LINE_BUF];
     const char *marker = tmp_path("bg_ran");
-    snprintf(line, sizeof line, "/bin/sh -c \"echo hi > %s\" &", marker);
+    snprintf(line, sizeof line, "/bin/sh -c \"echo hi > %s\" | /bin/cat &",
+             marker);
     int saved = stderr_off();
     int status = run(line);
     stderr_on(saved);
+    ASSERT_EQ(status, 0);
+    ASSERT_EQ(jobs_count(), 1);
+
+    nap_ms(400);
+    reap_cycle(NULL);
+    ASSERT_EQ(jobs_count(), 0);
+    ASSERT_TRUE(file_exists(tmp_path("bg_ran")));
+}
+
+// A job that never stopped is never filed, so the table stays empty.
+TEST(a_foreground_pipeline_files_no_job) {
+    ASSERT_EQ(jobs_count(), 0);
+    ASSERT_EQ(run("/bin/echo fg | /bin/cat > /dev/null"), 0);
+    ASSERT_EQ(jobs_count(), 0);
+    ASSERT_EQ(run("/bin/true"), 0);
+    ASSERT_EQ(jobs_count(), 0);
+}
+
+TEST(fg_and_bg_on_an_empty_table_fail) {
+    ASSERT_EQ(jobs_count(), 0);
+    int saved = stderr_off();
+    int fg_none = run("fg");
+    int bg_none = run("bg");
+    int fg_bogus = run("fg %99");
+    int bg_bogus = run("bg 99");
+    stderr_on(saved);
+    ASSERT_EQ(fg_none, 1);
+    ASSERT_EQ(bg_none, 1);
+    ASSERT_EQ(fg_bogus, 1);
+    ASSERT_EQ(bg_bogus, 1);
+}
+
+// bg only resumes what is stopped; a running job is an error, not a no-op.
+TEST(bg_refuses_a_job_that_is_already_running) {
+    int saved = stderr_off();
+    ASSERT_EQ(run("sleep 0.3 &"), 0);
+    int status = run("bg");
+    stderr_on(saved);
     ASSERT_EQ(status, 1);
-    ASSERT_TRUE(!file_exists(tmp_path("bg_ran")));
+
+    nap_ms(500);
+    reap_cycle(NULL);
+    ASSERT_EQ(jobs_count(), 0);
+}
+
+// fg blocks until the job is gone, which is the whole difference from bg.
+TEST(fg_waits_for_a_running_background_job) {
+    int saved = stderr_off();
+    ASSERT_EQ(run("sleep 0.3 &"), 0);
+    ASSERT_EQ(jobs_count(), 1);
+    long t0 = now_ms();
+    int status = run("fg");
+    long spent = now_ms() - t0;
+    stderr_on(saved);
+
+    ASSERT_EQ(status, 0);
+    ASSERT_TRUE(spent >= 200);
+    reap_cycle(NULL);
+    ASSERT_EQ(jobs_count(), 0);
+}
+
+TEST(jobs_lists_a_running_job) {
+    char path[SCRATCH_BUF];
+    snprintf(path, sizeof path, "%s/jobs_out.txt", g_tmp);
+    char line[LINE_BUF];
+    int saved = stderr_off();
+    ASSERT_EQ(run("sleep 0.3 &"), 0);
+    snprintf(line, sizeof line, "jobs > %s", path);
+    int status = run(line);
+    stderr_on(saved);
+    ASSERT_EQ(status, 0);
+
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_TRUE(strstr(body, "[1]") != NULL);
+    ASSERT_TRUE(strstr(body, "Running") != NULL);
+    ASSERT_TRUE(strstr(body, "sleep 0.3 &") != NULL);
+
+    nap_ms(500);
+    reap_cycle(NULL);
+    ASSERT_EQ(jobs_count(), 0);
 }
 
 // An empty pipeline is not a command, so the status survives it.
