@@ -20,6 +20,10 @@
 
 #define PATH_BUF 4096
 #define LINE_BUF 8192
+#define READ_BUF 1024
+
+// A scratch path is the template plus a short name, so two of them fit a line.
+#define SCRATCH_BUF 128
 
 // A fixed template, so a short buffer keeps snprintf from looking truncated.
 #define TMP_BUF 64
@@ -67,6 +71,18 @@ static const char *tmp_path(const char *name) {
 static bool file_exists(const char *path) {
     struct stat st;
     return stat(path, &st) == 0;
+}
+
+// Empty on any failure, so a caller can compare without checking twice.
+static void read_file(const char *path, char *buf, size_t size) {
+    buf[0] = '\0';
+    FILE *f = fopen(path, "r");
+    if (f == NULL) {
+        return;
+    }
+    size_t n = fread(buf, 1, size - 1, f);
+    buf[n] = '\0';
+    fclose(f);
 }
 
 // The real path a line takes through the shell: scan, parse, execute.
@@ -278,30 +294,204 @@ TEST(unterminated_brace_expansion_is_a_bad_substitution) {
     ASSERT_EQ(status, 2);
 }
 
-// Phase 1 limits
+// Pipes and redirection
 
-TEST(a_pipeline_is_refused_without_running_anything) {
+// The first stage proves it ran by leaving a file, so cat stays silent.
+TEST(a_pipeline_runs_every_stage) {
     char line[LINE_BUF];
     const char *marker = tmp_path("pipe_ran");
     snprintf(line, sizeof line, "/bin/sh -c \"echo hi > %s\" | /bin/cat",
              marker);
-    int saved = stderr_off();
-    int status = run(line);
-    stderr_on(saved);
-    ASSERT_EQ(status, 1);
-    ASSERT_TRUE(!file_exists(tmp_path("pipe_ran")));
+    ASSERT_EQ(run(line), 0);
+    ASSERT_TRUE(file_exists(tmp_path("pipe_ran")));
 }
 
-TEST(a_redirect_is_refused_without_running_anything) {
+TEST(a_redirect_writes_the_file) {
     char line[LINE_BUF];
-    const char *marker = tmp_path("redir_ran");
-    snprintf(line, sizeof line, "/bin/true > %s", marker);
+    char path[SCRATCH_BUF];
+    snprintf(path, sizeof path, "%s/redir_ran", g_tmp);
+    snprintf(line, sizeof line, "/bin/echo hi > %s", path);
+    ASSERT_EQ(run(line), 0);
+
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_STR_EQ(body, "hi\n");
+}
+
+TEST(the_last_stage_owns_the_status) {
+    ASSERT_EQ(run("false | true"), 0);
+    ASSERT_EQ(run("true | false"), 1);
+    ASSERT_EQ(run("true | false | true"), 0);
+    ASSERT_EQ(run("true | true | false"), 1);
+}
+
+TEST(a_three_stage_pipeline_passes_data_through) {
+    char line[LINE_BUF];
+    char path[SCRATCH_BUF];
+    snprintf(path, sizeof path, "%s/three.txt", g_tmp);
+    snprintf(line, sizeof line, "printf 'b\\na\\n' | sort | cat > %s", path);
+    ASSERT_EQ(run(line), 0);
+
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_STR_EQ(body, "a\nb\n");
+}
+
+TEST(append_extends_where_truncation_replaces) {
+    char line[LINE_BUF];
+    char path[SCRATCH_BUF];
+    char body[READ_BUF];
+    snprintf(path, sizeof path, "%s/append.txt", g_tmp);
+
+    snprintf(line, sizeof line, "/bin/echo one > %s", path);
+    ASSERT_EQ(run(line), 0);
+    snprintf(line, sizeof line, "/bin/echo two >> %s", path);
+    ASSERT_EQ(run(line), 0);
+    read_file(path, body, sizeof body);
+    ASSERT_STR_EQ(body, "one\ntwo\n");
+
+    snprintf(line, sizeof line, "/bin/echo three > %s", path);
+    ASSERT_EQ(run(line), 0);
+    read_file(path, body, sizeof body);
+    ASSERT_STR_EQ(body, "three\n");
+}
+
+TEST(input_redirect_feeds_the_command) {
+    char line[LINE_BUF];
+    char src[SCRATCH_BUF];
+    char dst[SCRATCH_BUF];
+    snprintf(src, sizeof src, "%s/feed_in.txt", g_tmp);
+    snprintf(dst, sizeof dst, "%s/feed_out.txt", g_tmp);
+
+    snprintf(line, sizeof line, "/bin/echo fed > %s", src);
+    ASSERT_EQ(run(line), 0);
+    snprintf(line, sizeof line, "cat < %s > %s", src, dst);
+    ASSERT_EQ(run(line), 0);
+
+    char body[READ_BUF];
+    read_file(dst, body, sizeof body);
+    ASSERT_STR_EQ(body, "fed\n");
+}
+
+TEST(stderr_redirect_leaves_stdout_clean) {
+    char line[LINE_BUF];
+    char out[SCRATCH_BUF];
+    char err[SCRATCH_BUF];
+    snprintf(out, sizeof out, "%s/split_out.txt", g_tmp);
+    snprintf(err, sizeof err, "%s/split_err.txt", g_tmp);
+    snprintf(line, sizeof line,
+             "/bin/sh -c 'echo to_out; echo to_err >&2' > %s 2> %s", out, err);
+    ASSERT_EQ(run(line), 0);
+
+    char body[READ_BUF];
+    read_file(out, body, sizeof body);
+    ASSERT_STR_EQ(body, "to_out\n");
+    read_file(err, body, sizeof body);
+    ASSERT_STR_EQ(body, "to_err\n");
+}
+
+TEST(a_redirect_target_can_come_from_a_variable) {
+    char line[LINE_BUF];
+    char path[SCRATCH_BUF];
+    snprintf(path, sizeof path, "%s/from_var.txt", g_tmp);
+
+    snprintf(line, sizeof line, "export NSH_T_TARGET=%s", path);
+    ASSERT_EQ(run(line), 0);
+    ASSERT_EQ(run("/bin/echo via_var > $NSH_T_TARGET"), 0);
+
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    int cleared = run("unset NSH_T_TARGET");
+    ASSERT_STR_EQ(body, "via_var\n");
+    ASSERT_EQ(cleared, 0);
+}
+
+// A target that cannot be opened is a command that never ran.
+TEST(an_unopenable_target_leaves_status_one_and_runs_nothing) {
+    char line[LINE_BUF];
+    const char *marker = tmp_path("never_ran");
+    snprintf(line, sizeof line,
+             "/bin/sh -c \"echo hi > %s\" > /nsh/no/such/dir/target", marker);
     int saved = stderr_off();
     int status = run(line);
     stderr_on(saved);
     ASSERT_EQ(status, 1);
-    ASSERT_TRUE(!file_exists(tmp_path("redir_ran")));
+    ASSERT_TRUE(!file_exists(tmp_path("never_ran")));
 }
+
+// A bad target word is a usage error, exactly like a bad argv word.
+TEST(an_unterminated_target_is_a_bad_substitution) {
+    int saved = stderr_off();
+    int status = run("/bin/true > ${BROKEN");
+    stderr_on(saved);
+    ASSERT_EQ(status, 2);
+}
+
+// The redirect moves the shell's own fds, so the chdir must still land here.
+TEST(a_builtin_with_a_redirect_still_changes_the_shell) {
+    char want[PATH_BUF];
+    ASSERT_EQ(chdir(g_tmp), 0);
+    bool got_want = getcwd(want, sizeof want) != NULL;
+    ASSERT_EQ(chdir(g_cwd), 0);
+    ASSERT_TRUE(got_want);
+
+    char line[LINE_BUF];
+    char log[SCRATCH_BUF];
+    snprintf(log, sizeof log, "%s/cd_log.txt", g_tmp);
+    snprintf(line, sizeof line, "cd %s > %s", g_tmp, log);
+    int status = run(line);
+
+    char here[PATH_BUF];
+    bool got_here = getcwd(here, sizeof here) != NULL;
+    int back = chdir(g_cwd);
+
+    ASSERT_EQ(status, 0);
+    ASSERT_TRUE(got_here);
+    ASSERT_STR_EQ(here, want);
+    ASSERT_EQ(back, 0);
+    ASSERT_TRUE(file_exists(log));
+}
+
+TEST(a_builtin_can_be_a_pipeline_stage) {
+    char line[LINE_BUF];
+    char path[SCRATCH_BUF];
+    snprintf(path, sizeof path, "%s/help.txt", g_tmp);
+    snprintf(line, sizeof line, "help | /bin/cat > %s", path);
+    ASSERT_EQ(run(line), 0);
+
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_TRUE(strstr(body, "nullsh builtins") != NULL);
+}
+
+// An early reader exit must not wedge the writer or the shell.
+TEST(an_early_reader_exit_does_not_hang) {
+    char line[LINE_BUF];
+    char path[SCRATCH_BUF];
+    snprintf(path, sizeof path, "%s/head.txt", g_tmp);
+    snprintf(line, sizeof line, "seq 100000 | head -1 > %s", path);
+    ASSERT_EQ(run(line), 0);
+
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_STR_EQ(body, "1\n");
+}
+
+// Six stages is where a single leaked write end shows up as a hang.
+TEST(a_six_stage_pipeline_closes_every_fd) {
+    char line[LINE_BUF];
+    char path[SCRATCH_BUF];
+    snprintf(path, sizeof path, "%s/six.txt", g_tmp);
+    snprintf(line, sizeof line,
+             "/bin/echo deep | cat | cat | cat | cat | cat > %s", path);
+    ASSERT_EQ(run(line), 0);
+
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_STR_EQ(body, "deep\n");
+}
+
+// Phase 4 limits
 
 TEST(background_is_refused_without_running_anything) {
     char line[LINE_BUF];
