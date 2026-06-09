@@ -13,5 +13,9 @@ NshError term_enter_raw(void);
 // safe to call twice.
 void term_exit_raw(void);
 
+// term_exit_raw for a signal handler: only tcsetattr, fcntl and write, all of
+// which POSIX lists as async-signal-safe. No error reporting, no stdio.
+void term_emergency_restore(void);
+
 // One byte from stdin, or -1 when nothing is pending.
 int term_read_key(void);

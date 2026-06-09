@@ -29,7 +29,10 @@ CORE_TEST_OBJS := $(BUILD)/debug/src/alloc/alloc.o $(BUILD)/debug/src/alloc/firs
                   $(BUILD)/debug/src/shell/jobs.o $(BUILD)/debug/src/shell/signals.o \
                   $(BUILD)/debug/src/shell/spawn.o $(BUILD)/debug/src/shell/exec.o \
                   $(BUILD)/debug/src/alloc/heap_builtin.o $(BUILD)/debug/src/inspect/elf.o \
-                  $(BUILD)/debug/src/inspect/print.o $(BUILD)/debug/src/inspect/inspect.o
+                  $(BUILD)/debug/src/inspect/print.o $(BUILD)/debug/src/inspect/inspect.o \
+                  $(BUILD)/debug/src/emu/cpu.o $(BUILD)/debug/src/emu/display.o \
+                  $(BUILD)/debug/src/emu/keypad.o $(BUILD)/debug/src/emu/term.o \
+                  $(BUILD)/debug/src/emu/emu.o
 
 UNIT_TEST_SRCS := $(shell find src -name '*_test.c')
 SELF_TEST_SRCS := $(sort $(wildcard tests/*.c))

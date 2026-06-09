@@ -51,6 +51,7 @@ TEST(lookup_finds_every_builtin) {
     ASSERT_TRUE(builtin_lookup("export") != NULL);
     ASSERT_TRUE(builtin_lookup("unset") != NULL);
     ASSERT_TRUE(builtin_lookup("history") != NULL);
+    ASSERT_TRUE(builtin_lookup("emu") != NULL);
 }
 
 TEST(lookup_rejects_non_builtins) {
