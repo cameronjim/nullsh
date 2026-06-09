@@ -1,6 +1,6 @@
 # nullsh architecture
 
-Updated at the end of every phase. Current as of: Phase 3 (pipes and redirection).
+Updated at the end of every phase. Current as of: Phase 4 (job control).
 
 ## Big picture
 
@@ -22,7 +22,7 @@ The learning tools (`inspect`, `netmon`, `emu`, `heap`) are builtins. They live 
 |---|---|---|
 | `src/alloc/` | nsh_* over mmap arenas, firstfit + buddy strategies, guard canaries, heap builtin | done |
 | `src/util/` | Str, Vec, line reader, NshError | done |
-| `src/shell/` | lexer, expand, parser, exec, redirect, builtins, history; jobs/signals later | Phase 3 done |
+| `src/shell/` | lexer, expand, parser, exec, spawn, redirect, jobs, signals, builtins, history | Phase 4 done |
 | `src/inspect/` | ELF parsing and printing | Phase 5 |
 | `src/emu/` | CHIP-8 cpu, display, keypad | Phase 6 |
 | `src/netmon/` | raw socket capture, header decode, print | Phase 7 |
@@ -32,6 +32,8 @@ The learning tools (`inspect`, `netmon`, `emu`, `heap`) are builtins. They live 
 
 - **Flat pipeline grammar, no AST.** The shell grammar is `pipeline := cmd ('|' cmd)* ['&']` plus redirects. A vector of Command structs represents it fully. An AST earns its keep only with `&&`, `if`, subshells, which are out of scope.
 - **Builtins run in-process only when alone.** A builtin inside a pipeline forks like an external command; only a lone builtin mutates the shell, with its redirects applied around it via fd save/restore. This keeps `cd` correct and pipelines uniform.
+- **Job control is terminal ownership, not scheduling.** Every launch lands in its own process group (parent and child both setpgid to close the race); the terminal's foreground group is swapped with tcsetpgrp around each foreground wait and always swapped back, even on a stop. Only the handoff is tty-gated: groups and reaping work in scripts too, which is a documented divergence from bash (which disables job control when non-interactive).
+- **The SIGCHLD handler sets one flag.** All real work (waitpid WNOHANG|WUNTRACED|WCONTINUED loop, job table updates, Done notifications) happens in the REPL before each prompt, because almost nothing is async-signal-safe.
 - **Pipe fds are tracked in one flat array and closed everywhere.** Each child closes every pipe fd after wiring its own two; the parent closes all of them after the fork loop. A middle pipeline child sees exactly fds 0, 1, 2, verified by the /proc/self/fd probe in review.
 - **One global for jobs, one for signal flags.** POSIX forces both. Everything else is passed as explicit arguments; there is no shell "context singleton".
 - **Errors are NshError return codes.** Functions that can fail return NshError and write results through out-params. The REPL prints `nsh_error_str()` messages and never exits on user error.
