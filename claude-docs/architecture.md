@@ -1,6 +1,6 @@
 # nullsh architecture
 
-Updated at the end of every phase. Current as of: Phase 6 (chip-8 emulator).
+Updated at the end of every phase. Current as of: Phase 7 (netmon).
 
 ## Big picture
 
@@ -25,7 +25,7 @@ The learning tools (`inspect`, `netmon`, `emu`, `heap`) are builtins. They live 
 | `src/shell/` | lexer, expand, parser, exec, spawn, redirect, jobs, signals, builtins, history | Phase 4 done |
 | `src/inspect/` | elf.c defensive parser, print.c formatting, inspect builtin | done |
 | `src/emu/` | chip-8 cpu (pure), display renderers, keypad map, raw terminal, emu loop | done |
-| `src/netmon/` | raw socket capture, header decode, print | Phase 7 |
+| `src/netmon/` | AF_PACKET capture, defensive decode, filter, print, netmon builtin | done |
 | `tests/` | harness.h, integration scripts | Phase 0 |
 
 ## Decisions and why
