@@ -13,7 +13,9 @@
 #include <unistd.h>
 
 #include "builtin.h"
+#include "eval.h"
 #include "expand.h"
+#include "func.h"
 #include "jobs.h"
 #include "redirect.h"
 #include "signals.h"
@@ -33,6 +35,12 @@ extern char **environ;
 // A bad expansion is a usage error, not a failed command.
 #define STATUS_BAD_SUBST 2
 
+// Everything the expander reads from the shell, as it stands right now.
+static ExpandCtx expand_ctx(const Shell *sh) {
+    ExpandCtx ctx = {sh->last_status, sh->argc, sh->argv};
+    return ctx;
+}
+
 static void argv_free(char **argv, int argc) {
     if (argv == NULL) {
         return;
@@ -44,7 +52,7 @@ static void argv_free(char **argv, int argc) {
 }
 
 // On failure nothing is handed back and nothing is left allocated.
-static NshError build_argv(const Command *c, int last_status, char ***out,
+static NshError build_argv(const Command *c, const ExpandCtx *ctx, char ***out,
                            int *out_argc) {
     size_t n = c->words.len;
     char **argv = nsh_calloc(n + 1, sizeof(*argv));
@@ -53,7 +61,7 @@ static NshError build_argv(const Command *c, int last_status, char ***out,
     for (size_t i = 0; i < n; i++) {
         const Token *w = vec_get(&c->words, i);
         char *text = NULL;
-        NshError err = expand_word(w, last_status, &text);
+        NshError err = expand_word(w, ctx, &text);
         if (err != NSH_OK) {
             argv_free(argv, argc);
             return err;
@@ -169,10 +177,34 @@ static int run_builtin(Shell *sh, const Command *c, BuiltinFn fn, int argc,
         return fn(sh, argc, argv);
     }
     RedirSave save = REDIR_SAVE_INIT;
-    NshError err = redirect_apply(c, sh->last_status, &save);
+    ExpandCtx ctx = expand_ctx(sh);
+    NshError err = redirect_apply(c, &ctx, &save);
     int status = (err == NSH_OK) ? fn(sh, argc, argv) : redirect_status(err);
     redirect_restore(&save);
     return status;
+}
+
+// A function body runs in the shell too, so its redirects take the same save
+// and restore path a builtin's do. False means argv[0] names no function.
+static bool run_function(Shell *sh, const Command *c, int argc, char **argv,
+                         int *status) {
+    if (func_lookup(argv[0]) == NULL) {
+        return false;
+    }
+    if (!has_redirect(c)) {
+        return eval_maybe_call_function(sh, argc, argv, status);
+    }
+    RedirSave save = REDIR_SAVE_INIT;
+    ExpandCtx ctx = expand_ctx(sh);
+    NshError err = redirect_apply(c, &ctx, &save);
+    bool ran = true;
+    if (err == NSH_OK) {
+        ran = eval_maybe_call_function(sh, argc, argv, status);
+    } else {
+        *status = redirect_status(err);
+    }
+    redirect_restore(&save);
+    return ran;
 }
 
 // Pipe i lives in fds[2 * i] and fds[2 * i + 1]; a closed slot holds -1.
@@ -197,9 +229,10 @@ static void run_stage(Shell *sh, const Command *c, int in_fd, int out_fd,
     // Every spare copy of a write end must go or no reader ever sees EOF.
     close_fds(fds, nfds);
 
+    ExpandCtx ctx = expand_ctx(sh);
     char **argv = NULL;
     int argc = 0;
-    if (build_argv(c, sh->last_status, &argv, &argc) != NSH_OK) {
+    if (build_argv(c, &ctx, &argv, &argc) != NSH_OK) {
         fprintf(stderr, "nullsh: bad substitution\n");
         fflush(stderr);
         _exit(STATUS_BAD_SUBST);
@@ -212,7 +245,7 @@ static void run_stage(Shell *sh, const Command *c, int in_fd, int out_fd,
     }
 
     // File redirects land after the pipe wiring, so an explicit > wins.
-    NshError err = redirect_apply(c, sh->last_status, NULL);
+    NshError err = redirect_apply(c, &ctx, NULL);
     if (err != NSH_OK) {
         die_redirect(err);
     }
@@ -223,12 +256,19 @@ static void run_stage(Shell *sh, const Command *c, int in_fd, int out_fd,
         fflush(NULL);
         _exit(status);
     }
+    // A function in a pipeline runs here, in the child, and never comes back.
+    int status = 0;
+    if (eval_maybe_call_function(sh, argc, argv, &status)) {
+        fflush(NULL);
+        _exit(status);
+    }
     exec_argv(argv);
 }
 
 // The job table's label. Rebuilt from the expanded words, so quoting and the
 // original spacing are lost; only enough to recognise the job is promised.
 static char *pipeline_cmdline(const Shell *sh, const Pipeline *pl) {
+    ExpandCtx ctx = expand_ctx(sh);
     Str s;
     str_init(&s);
     for (size_t i = 0; i < pl->cmds.len; i++) {
@@ -241,8 +281,7 @@ static char *pipeline_cmdline(const Shell *sh, const Pipeline *pl) {
                 str_push(&s, ' ');
             }
             char *text = NULL;
-            if (expand_word(vec_get(&c->words, k), sh->last_status, &text) !=
-                NSH_OK) {
+            if (expand_word(vec_get(&c->words, k), &ctx, &text) != NSH_OK) {
                 continue;
             }
             str_append(&s, text);
@@ -371,9 +410,10 @@ static int run_forked(Shell *sh, const Pipeline *pl) {
 // One command with no &: a builtin runs in the shell, anything else forks.
 static int run_simple(Shell *sh, const Pipeline *pl) {
     const Command *c = vec_get(&pl->cmds, 0);
+    ExpandCtx ctx = expand_ctx(sh);
     char **argv = NULL;
     int argc = 0;
-    if (build_argv(c, sh->last_status, &argv, &argc) != NSH_OK) {
+    if (build_argv(c, &ctx, &argv, &argc) != NSH_OK) {
         fprintf(stderr, "nullsh: bad substitution\n");
         return STATUS_BAD_SUBST;
     }
@@ -388,11 +428,12 @@ static int run_simple(Shell *sh, const Pipeline *pl) {
         return STATUS_NOT_FOUND;
     }
 
+    // Dispatch order: builtin, then function, then the PATH search.
     BuiltinFn fn = builtin_lookup(argv[0]);
-    int status;
+    int status = 0;
     if (fn != NULL) {
         status = run_builtin(sh, c, fn, argc, argv);
-    } else {
+    } else if (!run_function(sh, c, argc, argv, &status)) {
         // The child expands again; expansion is pure, so the words match.
         status = run_forked(sh, pl);
     }
