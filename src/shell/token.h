@@ -13,7 +13,13 @@ typedef enum {
     TOK_REDIR_OUT,     // >
     TOK_REDIR_APPEND,  // >>
     TOK_REDIR_ERR,     // 2>
-    TOK_AMP            // &
+    TOK_AMP,           // &
+    TOK_AND_IF,        // &&
+    TOK_OR_IF,         // ||
+    TOK_SEMI,          // ;
+    TOK_NEWLINE,       // \n outside quotes
+    TOK_LPAREN,        // (
+    TOK_RPAREN         // )
 } TokenKind;
 
 // One quoting run inside a word: "a"'b'c is three segments.

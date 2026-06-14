@@ -12,6 +12,14 @@ static void token_free_item(void *p) {
     token_free(p);
 }
 
+// Contracts-commit stub; the parser agent replaces it with the real descent.
+NshError parser_parse_program(TokenList *tl, Node **out) {
+    token_list_free(tl);
+    vec_init(&tl->tokens);
+    *out = NULL;
+    return NSH_ERR_SYNTAX;
+}
+
 static Command *cmd_new(void) {
     Command *c = nsh_calloc(1, sizeof(*c));
     vec_init(&c->words);
