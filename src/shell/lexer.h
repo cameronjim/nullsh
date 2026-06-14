@@ -1,6 +1,4 @@
-// Lexer: one command line in, a TokenList out. Quotes are resolved here, so
-// consumers see words already split into segments that say whether expansion
-// may touch them.
+// Lexer: one command line in, a TokenList out.
 
 #pragma once
 
@@ -8,8 +6,5 @@
 
 #include "../util/error.h"
 
-// Scans one command line into out (out is overwritten, not appended). out must
-// be a zeroed TokenList or one filled by an earlier scan.
-// NSH_OK, or NSH_ERR_SYNTAX for unterminated quotes. On error, out is left
-// as a valid empty list (nothing leaks).
+// out is overwritten, not appended, and left valid and empty on error.
 NshError lexer_scan(const char *line, TokenList *out);

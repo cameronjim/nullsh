@@ -1,6 +1,4 @@
-// Unit tests for the growable string, with the emphasis on the promises the
-// header makes: data is always a valid C string, capacity growth never loses
-// bytes, and embedded NULs survive in len.
+// Tests for the growable string.
 
 #include "str.h"
 
@@ -32,8 +30,7 @@ TEST(push_appends_one_byte_at_a_time) {
     str_free(&s);
 }
 
-// The interesting part is every intermediate state, not just the end: after
-// each push the buffer must still read as a C string of the right length.
+// Every intermediate state matters, not just the end.
 TEST(push_stays_correct_across_growth_boundaries) {
     Str s;
     str_init(&s);
@@ -118,8 +115,6 @@ TEST(append_n_copies_exactly_n_bytes) {
     str_free(&s);
 }
 
-// p is not required to be NUL terminated, so a slice of a larger buffer with
-// no terminator of its own must copy cleanly.
 TEST(append_n_accepts_unterminated_input) {
     Str s;
     str_init(&s);
@@ -174,7 +169,6 @@ TEST(take_returns_the_content_and_resets_the_string) {
     ASSERT_TRUE(s.data != NULL);
     ASSERT_EQ(s.data[0], '\0');
     nsh_free(out);
-    // The reset Str is a normal empty string, ready for reuse.
     str_append(&s, "again");
     ASSERT_STR_EQ(s.data, "again");
     str_free(&s);

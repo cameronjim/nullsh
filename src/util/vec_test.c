@@ -1,6 +1,4 @@
-// Unit tests for the pointer vector: the push/get/pop contract, doubling
-// growth across many elements, the out-of-range and empty edges, and the two
-// free paths. Run under ASan, so a missed free fails the suite at exit.
+// Tests for the pointer vector.
 
 #include "vec.h"
 
@@ -9,8 +7,7 @@
 #include "../alloc/alloc.h"
 #include "../../tests/harness.h"
 
-// Turns a loop counter into a distinct non-NULL pointer value. Nothing is ever
-// dereferenced through it, only compared.
+// A distinct non-NULL pointer value, never dereferenced, only compared.
 static void *tag(size_t i) {
     return (void *)(uintptr_t)(i + 1);
 }
@@ -139,8 +136,7 @@ TEST(get_out_of_range_returns_null) {
     vec_free(&v);
 }
 
-// A stored NULL is a real element. It is only distinguishable from an
-// out-of-range read by comparing the index against len.
+// A stored NULL is a real element, told from out of range only by len.
 TEST(push_null_is_legal_and_retrievable) {
     Vec v;
     vec_init(&v);
@@ -195,8 +191,6 @@ TEST(free_deep_on_an_empty_vector_is_safe) {
     ASSERT_TRUE(v.items == NULL);
 }
 
-// A freed vector is back to its zeroed state, so it can be pushed to again
-// without a second vec_init.
 TEST(a_freed_vector_can_be_reused) {
     Vec v;
     vec_init(&v);

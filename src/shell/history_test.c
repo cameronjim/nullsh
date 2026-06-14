@@ -1,5 +1,4 @@
-// Unit tests for the history ring and its file format: ordering, eviction,
-// the duplicate rule, and a save/load round trip through /tmp.
+// Tests for the history ring and its file format.
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -12,8 +11,7 @@
 #include "../alloc/alloc.h"
 #include "../../tests/harness.h"
 
-// Each test gets its own file name so a parallel run of the suite, or a stale
-// file left by a crashed run, cannot influence the result.
+// A per-process file name, so a stale or parallel run cannot interfere.
 static void temp_path(char *out, size_t out_size, const char *tag) {
     snprintf(out, out_size, "/tmp/nullsh_hist_%s_%ld", tag, (long)getpid());
 }
@@ -111,8 +109,7 @@ TEST(full_ring_evicts_oldest) {
     history_free(&h);
 }
 
-// After wrapping, the duplicate check still has to look at the newest entry
-// rather than the highest ring slot.
+// After wrapping, the newest entry is not the highest ring slot.
 TEST(duplicate_check_survives_wraparound) {
     History h;
     ASSERT_EQ(history_init(&h, 2), NSH_OK);
@@ -159,8 +156,6 @@ TEST(save_then_load_reproduces_entries) {
     remove(path);
 }
 
-// Saving a wrapped ring writes the live entries oldest first, not the raw
-// slot order.
 TEST(save_of_wrapped_ring_writes_logical_order) {
     char path[128];
     temp_path(path, sizeof(path), "wrapped");
@@ -218,8 +213,7 @@ TEST(load_of_missing_file_is_ok_and_adds_nothing) {
     history_free(&h);
 }
 
-// A directory is the portable stand-in for an existing path that cannot be
-// read as a file: either the open fails or the first read does.
+// A directory is the portable stand-in for a path that cannot be read.
 TEST(load_of_unreadable_path_is_io_error) {
     History h;
     ASSERT_EQ(history_init(&h, 4), NSH_OK);
@@ -254,8 +248,7 @@ TEST(save_of_empty_history_creates_empty_file) {
     remove(path);
 }
 
-// The load path must not read into a fixed buffer, so a line far longer than
-// any sane stack array has to come back byte for byte.
+// The load path must not read into a fixed buffer.
 TEST(very_long_line_survives_save_and_load) {
     char path[128];
     temp_path(path, sizeof(path), "longline");
@@ -288,7 +281,6 @@ TEST(very_long_line_survives_save_and_load) {
     remove(path);
 }
 
-// A file whose last line has no newline still yields that entry.
 TEST(load_reads_final_line_without_newline) {
     char path[128];
     temp_path(path, sizeof(path), "nonewline");
@@ -327,7 +319,6 @@ TEST(load_skips_blank_lines) {
     remove(path);
 }
 
-// Loading more lines than the ring holds evicts exactly like typing them.
 TEST(load_respects_capacity) {
     char path[128];
     temp_path(path, sizeof(path), "overflow");

@@ -1,5 +1,4 @@
-// The one Shell struct: state that must live in the shell process itself.
-// Builtins mutate it; the REPL owns it; nothing here is a global.
+// The Shell struct: state that must live in the shell process itself.
 
 #pragma once
 
@@ -10,6 +9,6 @@
 typedef struct {
     History history;
     int last_status;  // feeds $? in expansion
-    bool want_exit;   // set by the exit builtin; the REPL checks it each loop
+    bool want_exit;   // set by the exit builtin, checked by the REPL
     int exit_code;    // valid once want_exit is true
 } Shell;

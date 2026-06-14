@@ -1,6 +1,4 @@
-// The six builtins and the static table that maps a name to one of them.
-// Nothing here ever exits the process: exit only raises sh->want_exit and the
-// REPL decides when to leave. Every failure is one line on stderr plus status.
+// The seven builtins and the static table that maps a name to one of them.
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -14,19 +12,17 @@
 #include <unistd.h>
 
 #include "../alloc/alloc.h"
+#include "../alloc/heap_builtin.h"
 
-// getcwd needs a caller supplied buffer. A path longer than this fails with
-// ERANGE and is reported like any other cd failure.
+// getcwd needs a caller buffer, and a longer path fails with ERANGE.
 #define CWD_MAX 4096
 
-// Status a shell returns when exit is handed something that is not a number.
 #define EXIT_BAD_ARG 2
 
 static void bi_err(const char *name, const char *msg) {
     fprintf(stderr, "nullsh: %s: %s\n", name, msg);
 }
 
-// The two part form: "nullsh: cd: /nope: No such file or directory".
 static void bi_err_arg(const char *name, const char *arg, const char *msg) {
     fprintf(stderr, "nullsh: %s: %s: %s\n", name, arg, msg);
 }
@@ -47,8 +43,7 @@ static bool is_name_char(char c) {
     return is_name_start(c) || (c >= '0' && c <= '9');
 }
 
-// NAME must match [A-Za-z_][A-Za-z0-9_]*. The length is explicit so the name
-// half of NAME=VALUE can be checked without copying it out first.
+// NAME must match [A-Za-z_][A-Za-z0-9_]*; len avoids copying it out first.
 static bool valid_name(const char *s, size_t len) {
     if (len == 0 || !is_name_start(s[0])) {
         return false;
@@ -87,10 +82,7 @@ static int bi_cd(Shell *sh, int argc, char **argv) {
         target = argv[1];
     }
 
-    // PWD wins over getcwd so a directory reached through a symlink is
-    // remembered the way the user typed it. The snapshot is a copy because the
-    // setenv calls below can invalidate any pointer into the environment, and
-    // target itself may point at the old OLDPWD.
+    // A copy: the setenv calls below invalidate any pointer into environ.
     char buf[CWD_MAX];
     const char *pwd = getenv("PWD");
     if (pwd == NULL) {
@@ -128,7 +120,7 @@ static int bi_cd(Shell *sh, int argc, char **argv) {
 
 static int bi_exit(Shell *sh, int argc, char **argv) {
     if (argc > 2) {
-        // The one arg shape that leaves the shell running.
+        // The one argument shape that leaves the shell running.
         bi_err("exit", "too many arguments");
         return 1;
     }
@@ -162,6 +154,7 @@ static int bi_help(Shell *sh, int argc, char **argv) {
           "                   a single - means $OLDPWD\n"
           "  exit [status]    leave the shell, default is the last status\n"
           "  export NAME=VAL  set a variable for the shell and its children\n"
+          "  heap [args]      allocator stats, strategy [NAME], or dump\n"
           "  help             print this list\n"
           "  history          print the command history, oldest first\n"
           "  unset NAME       remove a variable from the environment\n",
@@ -184,10 +177,7 @@ static int bi_export(Shell *sh, int argc, char **argv) {
             continue;
         }
         if (eq == NULL) {
-            // NAME alone would promote a shell variable to the environment.
-            // nullsh keeps no separate variable table, so a name that already
-            // has a value is exported and one that does not has nothing to
-            // export. Either way there is nothing left to do.
+            // nullsh has no shell variable table, so a bare NAME does nothing.
             continue;
         }
 
@@ -244,8 +234,9 @@ typedef struct {
 } BuiltinEntry;
 
 static const BuiltinEntry BUILTINS[] = {
-    {"cd", bi_cd},         {"exit", bi_exit},       {"export", bi_export},
-    {"help", bi_help},     {"history", bi_history}, {"unset", bi_unset},
+    {"cd", bi_cd},          {"exit", bi_exit}, {"export", bi_export},
+    {"heap", heap_builtin}, {"help", bi_help}, {"history", bi_history},
+    {"unset", bi_unset},
 };
 
 BuiltinFn builtin_lookup(const char *name) {

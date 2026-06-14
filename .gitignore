@@ -1,4 +1,4 @@
-.claude
 build/
 *.o
+# CJ's personal scratchpad, never committed
 /notes.md

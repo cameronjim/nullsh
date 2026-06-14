@@ -1,6 +1,4 @@
-// Unit tests for the parser. Every case goes through the real lexer, so the
-// token stream under test is the one the shell actually produces. Each case
-// frees its pipeline, which is what lets ASan prove the ownership rules.
+// Tests for the parser, driven through the real lexer.
 
 #include "parser.h"
 
@@ -28,8 +26,7 @@ static Pipeline pl_zero(void) {
     return p;
 }
 
-// Lex then parse. The token list is freed here, so a leak in the parser's
-// consume-everything contract shows up as a double free or a leak under ASan.
+// The token list is freed here, so ASan sees any break in the ownership rules.
 static NshError run(const char *line, Pipeline *out) {
     TokenList tl = tl_zero();
     NshError lex = lexer_scan(line, &tl);
@@ -42,8 +39,7 @@ static NshError run(const char *line, Pipeline *out) {
     return err;
 }
 
-// Flattens a word's segments into one comparable string. The buffer is static
-// and reused, so only one word can be inspected at a time.
+// The buffer is static and reused, so only one word at a time.
 static const char *word_text(const Token *t) {
     static char buf[128];
     size_t n = 0;
@@ -171,7 +167,7 @@ TEST(quoted_word_stays_one_argv_entry) {
     pipeline_free(&pl);
 }
 
-// The parser must not flatten or reorder segments; expansion needs them intact.
+// Segments must not be flattened or reordered; expansion needs them.
 TEST(multi_segment_word_survives_with_its_segments) {
     Pipeline pl = pl_zero();
     ASSERT_EQ(run("echo \"a\"'b'c", &pl), NSH_OK);
@@ -340,8 +336,7 @@ TEST(all_three_slots_filled_at_once) {
     pipeline_free(&pl);
 }
 
-// Same three slots, this time with >> for stdout and the operators scattered
-// through the argv words.
+// The same three slots with >> and the operators scattered through argv.
 TEST(all_three_slots_filled_with_append_and_scattered_words) {
     Pipeline pl = pl_zero();
     ASSERT_EQ(run("2> err cmd >> out -x < in -y", &pl), NSH_OK);
@@ -427,8 +422,7 @@ TEST(redirect_followed_by_an_amp_has_no_target) {
     ASSERT_SYNTAX("echo > &");
 }
 
-// The lexer has no append-to-stderr token, so 2>> is 2> followed by a bare >.
-// The 2> then has no word target and the line is rejected.
+// 2>> lexes as 2> plus a bare >, so the 2> has no target.
 TEST(stderr_append_is_not_supported_and_is_a_syntax_error) {
     ASSERT_SYNTAX("cmd 2>> f");
 }
@@ -559,7 +553,7 @@ TEST(parse_leaves_the_token_list_empty_on_success) {
     token_list_free(&tl);
 }
 
-// The tokens after the failure point have to be released too, not stranded.
+// The tokens after the failure point must be released too.
 TEST(parse_leaves_the_token_list_empty_on_error) {
     TokenList tl = tl_zero();
     Pipeline pl = pl_zero();
@@ -572,8 +566,7 @@ TEST(parse_leaves_the_token_list_empty_on_error) {
     token_list_free(&tl);
 }
 
-// A duplicate slot happens after several commands are already built, so this
-// is the case where the partial pipeline has to be torn down.
+// The partial pipeline built before the duplicate slot has to be torn down.
 TEST(a_late_error_frees_the_commands_built_so_far) {
     Pipeline pl = pl_zero();
     ASSERT_EQ(run("a x | b y | c < i < j", &pl), NSH_ERR_SYNTAX);
