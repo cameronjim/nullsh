@@ -7,7 +7,7 @@ These rules are fixed. Every commit follows all of them.
 - Pure C17. Compiles clean with `-std=c17 -Wall -Wextra -Werror -pedantic` on gcc and clang.
 - Only POSIX system headers and the C standard library. No third-party code. If something is needed, write it.
 - Allocation goes through `nsh_malloc` / `nsh_free` / `nsh_realloc` / `nsh_calloc` everywhere. Never call libc `malloc` directly outside `src/alloc/`.
-- Makefile only. Targets: `make`, `make test`, `make clean`, `make debug`, `make release`.
+- Makefile only. Targets: `make`, `make release`, `make debug`, `make test`, `make test-net`, `make demo`, `make clean`.
 
 ## Structure
 

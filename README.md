@@ -1,27 +1,279 @@
 # nullsh
 
-nullsh is an educational Unix shell written in pure C17 with zero dependencies.
-Everything it needs it builds itself: a custom memory allocator, a lexer and
-parser, job control, an ELF inspector, a live packet viewer, and a CHIP-8
-virtual machine. The point is to read the whole thing and understand every
-line, so there is no third party code and nothing hidden behind a library.
+nullsh is an educational Unix shell written in pure C17 with zero third-party
+dependencies. It exists so that every layer under a running program can be read
+instead of assumed: process creation and PATH resolution, a memory allocator
+that replaces malloc for the entire process, pipes and file descriptor plumbing,
+terminal ownership and job control, an ELF file parser, a CHIP-8 CPU emulator,
+and a raw-socket packet decoder. Everything it needs it builds itself, so there
+is no library boundary to stop reading at.
 
-## Build
-
-```
-make
-```
-
-That produces `build/nullsh` with `-O2`. Use `make debug` for a build with
-`-g -O0` and AddressSanitizer plus UBSan at `build/nullsh-debug`, and
-`make clean` to delete `build/`.
-
-## Test
+## Build and run
 
 ```
-make test
+make                 # release build, -O2, produces build/nullsh
+./build/nullsh       # start the shell
+make debug           # -g -O0 with AddressSanitizer and UBSan, build/nullsh-debug
+make test            # build debug, run every unit test, then the integration scripts
+sudo make test-net   # the one integration test that needs a raw socket
+make demo            # replay the transcript below and fail if the README has rotted
+make clean           # delete build/
 ```
 
-This builds the debug binary, compiles and runs every unit test next to the
-code it covers, then runs the integration scripts in `tests/integration/`
-against the debug shell. Any failure fails the whole run.
+Linux only. nullsh calls `mmap`, `AF_PACKET`, `tcsetpgrp`, `setpgid` and the
+Linux `/proc` conventions directly, so it does not build on macOS or BSD. It was
+developed and tested on Ubuntu 24.04 under WSL2 with gcc 13.3. Objects and
+binaries all land under `build/`, never beside the sources.
+
+## Demo
+
+Everything below is a real session, copied out of a pty recording. Process ids,
+heap byte counts and ELF addresses differ from run to run. Everything else is
+byte for byte what nullsh prints.
+
+```
+nullsh:~$ echo hello world | tr a-z A-Z
+HELLO WORLD
+nullsh:~$ echo one > notes.txt
+nullsh:~$ echo two >> notes.txt
+nullsh:~$ cat < notes.txt | wc -l
+2
+nullsh:~$ sleep 3 &
+[1] 426
+nullsh:~$ jobs
+[1]  Running  sleep 3 &
+nullsh:~$ fg
+sleep 3 &
+[1]  Done  sleep 3 &
+nullsh:~$ heap stats
+strategy       firstfit
+arena size     16777216
+used bytes     10544
+free bytes     16766656
+live blocks    27
+free blocks    3
+largest free   16766544
+total mallocs  216
+total frees    189
+nullsh:~$ heap strategy buddy
+nullsh:~$ heap strategy
+buddy
+nullsh:~$ inspect --sections /usr/bin/ls | grep .text
+[16]  .text                 PROGBITS    0x0000000000004d70  0x00004d70  0x00014032  AX
+nullsh:~$ printf '\140\005\141\000\360\051\321\025\022\010' > five.ch8
+nullsh:~$ export NSH_EMU_HEADLESS=100
+nullsh:~$ emu five.ch8 | head -6
+####............................................................
+#...............................................................
+####............................................................
+...#............................................................
+####............................................................
+................................................................
+nullsh:~$ netmon
+nullsh: netmon: usage: netmon IFACE [--filter tcp|udp] [--port N]
+nullsh:~$ exit
+```
+
+Notes on the last three commands. The ten bytes written to `five.ch8` are a
+hand assembled CHIP-8 program that loads the font glyph for the digit 5 and
+draws it at the top left, then jumps to itself. `NSH_EMU_HEADLESS=100` tells
+`emu` to run exactly 100 cycles with no terminal, no timers and no sleeping,
+then dump the 64 by 32 framebuffer as ASCII, which is what makes the picture
+reproducible. Without that variable `emu` takes over the terminal and runs at
+about 700 instructions per second until you press Esc.
+
+`netmon` with no arguments prints its usage line, which is all it can do as a
+normal user. A real capture opens a raw `AF_PACKET` socket and needs root:
+
+```
+sudo ./build/nullsh
+nullsh:~$ netmon eth0 --filter udp --port 53
+```
+
+Without root it refuses cleanly rather than failing halfway:
+
+```
+nullsh:~$ netmon eth0
+nullsh: netmon: eth0: needs root, try sudo nullsh
+```
+
+`make demo` reruns every command in the transcript against the built shell and
+compares the deterministic parts, so the transcript cannot quietly go stale.
+
+## What is inside
+
+### Shell core
+
+`src/shell/lexer.c`, `expand.c`, `parser.c`, `exec.c`, `spawn.c`, `builtin.c`,
+`history.c`. A line becomes tokens, tokens become a flat pipeline of `Command`
+structs, and each command becomes a `fork` plus a hand rolled PATH search ending
+in `execve`. Teaches the fork and exec model: the child is a copy of the parent
+until `execve` replaces its image, which is why `cd` has to run in the parent
+and why the exit status conventions (127 for not found, 126 for found but not
+runnable) exist at all. Quoting is tracked per run inside a word, so `"a"'b'c`
+carries three segments and only the expandable ones see `$VAR`.
+
+### Pipes and redirection
+
+`src/shell/redirect.c` plus the pipeline loop in `exec.c`. Teaches file
+descriptor inheritance and the close discipline. `pipe()` hands back two fds,
+`dup2` rewires a child's 0, 1 or 2 before `execve`, and fork copies the table to
+every child. The part that bites people is closing: a reader sees EOF only when
+every write end in every process is closed, so each child closes all pipe fds
+after wiring its own two and the parent closes all of them after the fork loop.
+A middle stage of a pipeline ends up holding exactly fds 0, 1 and 2.
+
+### Job control
+
+`src/shell/jobs.c`, `signals.c`, `spawn.c`. Teaches that job control is about
+terminal ownership, not scheduling. Every pipeline gets its own process group.
+The terminal has one foreground process group at a time, set with `tcsetpgrp`,
+and the tty driver sends keyboard signals only to that group. That single fact
+is why Ctrl-C kills your command and spares the shell. Parent and child both
+call `setpgid` to close the race between them, the SIGCHLD handler sets one flag
+and nothing else, and the REPL does the real `waitpid` work before each prompt
+because almost nothing is safe to call inside a handler.
+
+### The allocator
+
+`src/alloc/alloc.c`, `firstfit.c`, `buddy.c`, `heap_builtin.c`. Teaches what
+malloc actually is. Memory comes from the kernel once, as a 16 MiB `mmap` arena
+per strategy, and the allocator is pure bookkeeping on top. First-fit threads a
+free list through the free memory itself, splits on allocate and coalesces
+neighbors on free. Buddy rounds every request up to a power of two and finds a
+block's partner with `addr XOR size`, which makes merging arithmetic instead of
+searching. Each block sits between canary bytes that are checked on free, and
+freed payloads are poisoned, because AddressSanitizer interposes on libc malloc
+and cannot see inside an arena nullsh mapped itself. The whole shell runs on
+this allocator: every string, token, job and framebuffer in the process comes
+out of it, so `heap stats` moves while you use the shell and `heap strategy
+buddy` switches where new blocks come from without moving a single live pointer.
+
+### inspect
+
+`src/inspect/elf.c`, `print.c`, `inspect.c`. Teaches that an ELF file carries
+two parallel descriptions of itself: sections, which are the linker's view
+(`.text`, `.data`, `.bss`, `.symtab`), and segments, which are the loader's view
+of which byte ranges get mapped where with which permissions. `--sections` and
+`--segments` print them side by side so the difference is concrete. The parser
+maps the file read only and validates every offset and length against the file
+size before following it, which is the same defensive discipline netmon needs,
+practiced on a file instead of a wire.
+
+### emu
+
+`src/emu/cpu.c`, `display.c`, `keypad.c`, `term.c`, `emu.c`. A CHIP-8 virtual
+machine. Teaches fetch, decode, execute: read two bytes at the program counter,
+switch on the nibbles, act, advance. Sprites are drawn by XOR, so drawing over a
+lit pixel clears it and raises the collision flag, which is how CHIP-8 games do
+hit detection. There are two clocks, not one: instructions run at about 700 Hz
+while the delay and sound timers tick at exactly 60 Hz, and keeping them
+separate against a monotonic clock is the whole timing lesson. `cpu.c` is pure
+logic with no I/O, no time and a seeded xorshift generator, which is why it can
+be unit tested opcode by opcode.
+
+### netmon
+
+`src/netmon/capture.c`, `decode.c`, `filter.c`, `print.c`, `netmon.c`. Teaches
+encapsulation by peeling it apart: an Ethernet header says the payload is IPv4,
+the IPv4 header says the payload is TCP or UDP, and each layer's length field
+decides where the next one starts. Multi-byte fields on the wire are big-endian
+regardless of the host, so every read goes through `ntohs` or `ntohl`. Capture
+uses `socket(AF_PACKET, SOCK_RAW, ...)`, which needs CAP_NET_RAW and therefore
+root. Nothing off the wire is trusted: every layer is bounds checked before a
+field is read, and a frame that does not add up is counted as malformed instead
+of crashing the shell.
+
+## Code rules
+
+- Pure C17, built with `-std=c17 -Wall -Wextra -Werror -pedantic`, clean on gcc
+  and clang.
+- POSIX system headers and the C standard library only. No third-party code.
+- All allocation goes through `nsh_malloc`, `nsh_free`, `nsh_realloc` and
+  `nsh_calloc`. Nothing outside `src/alloc/` calls libc malloc.
+- Makefile only. No generator, no build system.
+- No non-test file over 500 lines. Headers use `#pragma once`. `static` is the
+  default and only the public API reaches a header.
+- No global mutable state except where POSIX forces it: the signal flags and the
+  job table.
+- `snake_case` functions, `PascalCase` structs, `SCREAMING_SNAKE` constants.
+  Module-public functions carry their module prefix.
+- `//` comments only, one line each, never stacked into paragraphs. Every `.c`
+  and `.h` opens with exactly one comment line naming what the module does. A
+  comment has to earn its place with an invariant, a platform quirk or a syscall
+  behavior being relied on.
+- Every syscall checked, every error propagated as an `NshError` return code.
+  nullsh never segfaults on bad input.
+- Every change ships its tests in the same commit.
+- Prose stays direct and specific. No em dashes, no "utilize", no "leverage".
+
+The full versions live in `claude-docs/code-style.md`,
+`claude-docs/architecture.md` and `claude-docs/testing.md`.
+
+## Layout
+
+```
+nullsh/
+  Makefile
+  README.md
+  src/
+    main.c              REPL: prompt, read, lex, parse, execute, history file
+    alloc/              nsh_malloc over mmap arenas, firstfit, buddy, heap builtin
+    shell/              lexer, expand, parser, exec, spawn, redirect, jobs,
+                        signals, builtins, history
+    inspect/            ELF parser, formatting, the inspect builtin
+    emu/                CHIP-8 cpu, display, keypad, raw terminal, emu builtin
+    netmon/             AF_PACKET capture, decode, filter, print, netmon builtin
+    util/               Str, Vec, line reader, NshError
+  tests/
+    harness.h           the whole test framework
+    harness_selftest.c  tests for the framework itself
+    demo.sh             replays the README transcript
+    integration/        shell scripts that drive the built shell and diff output
+  claude-docs/
+    architecture.md  code-style.md  testing.md  plans/
+```
+
+Unit tests are not in `tests/`. Each one sits beside the code it covers as
+`foo_test.c`, and links only the objects that module actually needs.
+
+## Tests
+
+`make test` builds the debug binary and then runs the whole suite twice, once
+with `NSH_ALLOC_STRATEGY=firstfit` and once with `buddy`, so every shell test
+doubles as an allocator test. One pass is:
+
+- 508 unit test cases across 26 test binaries.
+- 213 integration checks across 9 scripts in `tests/integration/`.
+
+That is 721 checks per pass and 1442 per `make test`. `sudo make test-net` adds
+2 more from `tests/integration/08_netmon.sh`, which is separate because it opens
+a raw socket. The pty-driven job control script skips itself rather than failing
+when `script(1)` or `ps --ppid` is missing.
+
+## Limitations
+
+These are deliberate. nullsh is a shell for learning how a shell works, not a
+replacement for bash.
+
+- No `&&`, no `||`, no `;` command separator. One pipeline per line, optionally
+  ending in `&`. The grammar is flat on purpose, because an AST only starts
+  paying for itself once conditionals exist.
+- No globbing. `echo *.txt` prints `*.txt`.
+- No subshells, no command substitution, no `if`, `for`, `while`, or functions.
+  There is no scripting language here, only a command line.
+- No `~user` form.
+- No word splitting after expansion. A variable holding spaces stays one argv
+  entry.
+- No shell variable table. `export NAME=VALUE` writes straight to the
+  environment, and a bare `export NAME` does nothing.
+- `inspect` reads 64-bit little-endian ELF only. A 32-bit or big-endian file is
+  rejected with a message, not parsed halfway.
+- `netmon` decodes IPv4 only, over Ethernet, for TCP and UDP. No IPv6, no ARP
+  detail, no promiscuous mode, and no BPF filtering in the kernel. Filtering
+  happens after the frame is decoded.
+- Interactive line editing covers arrow keys and history recall. It is not
+  readline, and there is no completion.
+- Out of memory aborts. `nsh_malloc` never returns NULL, so call sites stay
+  clean, and a shell that cannot allocate a prompt buffer has nothing useful
+  left to do.
