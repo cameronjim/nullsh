@@ -1,4 +1,4 @@
-// Variable expansion: one pass per segment, never rescanning what it wrote.
+// Variable and tilde expansion: one pass per segment, never rescanning output.
 
 #include "expand.h"
 
@@ -44,6 +44,24 @@ static size_t name_len(const char *p) {
         n++;
     }
     return n;
+}
+
+// A leading ~ is HOME only as a whole first component of the word. Returns the
+// bytes of text consumed, so 1 when it expanded and 0 when it stays literal.
+// An unset or empty HOME leaves the tilde alone rather than aiming at /.
+static size_t expand_tilde(const char *text, bool word_end, Str *out) {
+    if (text[0] != '~') {
+        return 0;
+    }
+    if (text[1] != '/' && !(text[1] == '\0' && word_end)) {
+        return 0;
+    }
+    const char *home = getenv("HOME");
+    if (home == NULL || home[0] == '\0') {
+        return 0;
+    }
+    str_append(out, home);
+    return 1;
 }
 
 static NshError expand_segment(const char *text, int last_status, Str *out) {
@@ -101,7 +119,11 @@ NshError expand_word(const Token *tok, int last_status, char **out) {
             continue;
         }
         if (seg->expand) {
-            NshError err = expand_segment(seg->text, last_status, &acc);
+            // Only the word's first segment can carry a tilde prefix.
+            size_t skip = (i == 0) ? expand_tilde(seg->text, tok->segs.len == 1,
+                                                  &acc)
+                                   : 0;
+            NshError err = expand_segment(seg->text + skip, last_status, &acc);
             if (err != NSH_OK) {
                 str_free(&acc);
                 return err;

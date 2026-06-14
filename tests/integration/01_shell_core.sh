@@ -131,4 +131,22 @@ printf 'history\n' | run
 check_contains "second run recalls the first run's line" "$tmp/out" \
     "echo first_run_line"
 
+# 14. A leading tilde is HOME, on its own and as a path prefix.
+printf 'cd ~\npwd\n' | run
+check "cd ~ then pwd" "$(cat "$tmp/out")" "$(cd "$tmp" && pwd -P)"
+
+printf 'echo ~/sub\n' | run
+check "tilde slash expands" "$(cat "$tmp/out")" "$tmp/sub"
+
+# 15. Quoting or a non-leading position keeps the tilde literal, and ~user
+# is not a form nullsh knows.
+printf "echo '~/sub'\n" | run
+check "single quotes keep the tilde" "$(cat "$tmp/out")" '~/sub'
+
+printf 'echo a~/sub\n' | run
+check "a tilde inside a word stays literal" "$(cat "$tmp/out")" 'a~/sub'
+
+printf 'echo ~root/sub\n' | run
+check "~user stays literal" "$(cat "$tmp/out")" '~root/sub'
+
 exit $fail
