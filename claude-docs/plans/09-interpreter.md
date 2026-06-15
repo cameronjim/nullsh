@@ -70,8 +70,9 @@ Rules the grammar shorthand cannot show:
   only as a bare word (exactly one segment) in the position where the grammar
   wants them. Elsewhere they are ordinary words.
 - `&` backgrounds only a plain pipeline. `a && b &` and `if ...; fi &` are
-  syntax errors with the message `cannot background a list`. Rationale: bash
-  runs those in a subshell and nullsh has no subshells.
+  syntax errors (the parser stays silent like all its errors; main prints the
+  generic message). Rationale: bash runs those in a subshell and nullsh has no
+  subshells.
 - Compounds stand alone as an item: they cannot be piped into or out of, take
   no redirections, and do not chain with `&&`/`||`. `if ...; fi | grep x`,
   `fi > out` and `if ...; fi && echo` are all syntax errors. Strict and

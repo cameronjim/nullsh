@@ -68,5 +68,5 @@ EditKey editkeys_feed(EditKeys *k, unsigned char byte, char *ch);
 // Reads one line with editing and history recall, entering and leaving raw
 // mode around the call so external commands see a cooked terminal.
 // NSH_OK with out set, NSH_EOF for Ctrl-D on an empty line, NSH_ERR_IO on a
-// terminal failure. Ctrl-C returns NSH_OK with an empty line.
+// terminal failure. Ctrl-C returns NSH_INTERRUPT with an empty line.
 NshError edit_read_line(const char *prompt, History *h, Str *out);
