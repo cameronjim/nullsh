@@ -8,6 +8,9 @@ terminal ownership and job control, an ELF file parser, a CHIP-8 CPU emulator,
 and a raw-socket packet decoder. Everything it needs it builds itself, so there
 is no library boundary to stop reading at.
 
+`docs/manual.md` is the user manual: every piece of syntax, every key binding,
+every builtin and every deliberate limitation, in tables.
+
 ## Build and run
 
 ```
@@ -105,13 +108,14 @@ compares the deterministic parts, so the transcript cannot quietly go stale.
 ### Shell core
 
 `src/shell/lexer.c`, `expand.c`, `parser.c`, `exec.c`, `spawn.c`, `builtin.c`,
-`history.c`. A line becomes tokens, tokens become a flat pipeline of `Command`
-structs, and each command becomes a `fork` plus a hand rolled PATH search ending
-in `execve`. Teaches the fork and exec model: the child is a copy of the parent
-until `execve` replaces its image, which is why `cd` has to run in the parent
-and why the exit status conventions (127 for not found, 126 for found but not
-runnable) exist at all. Quoting is tracked per run inside a word, so `"a"'b'c`
-carries three segments and only the expandable ones see `$VAR`.
+`history.c`. A line becomes tokens, tokens become a syntax tree, each pipeline
+in that tree is a vector of `Command` structs, and each command becomes a `fork`
+plus a hand rolled PATH search ending in `execve`. Teaches the fork and exec
+model: the child is a copy of the parent until `execve` replaces its image,
+which is why `cd` has to run in the parent and why the exit status conventions
+(127 for not found, 126 for found but not runnable) exist at all. Quoting is
+tracked per run inside a word, so `"a"'b'c` carries three segments and only the
+expandable ones see `$VAR`.
 
 ### Pipes and redirection
 
@@ -133,6 +137,25 @@ is why Ctrl-C kills your command and spares the shell. Parent and child both
 call `setpgid` to close the race between them, the SIGCHLD handler sets one flag
 and nothing else, and the REPL does the real `waitpid` work before each prompt
 because almost nothing is safe to call inside a handler.
+
+### The interpreter
+
+`src/shell/ast.c`, `parser.c`, `eval.c`, `func.c`, `run.c`. This is what makes
+nullsh a small language instead of a command runner: `;`, `&&`, `||`, `!`,
+`if`/`elif`/`else`, `while`, `for`, functions with arguments, `break`,
+`continue`, `return`, comments, multi-line input and script files with
+positional parameters. Teaches why a tree and not a list. `a | b` is a sequence,
+so a vector holds it completely, but `a && b` is a decision, whether `b` runs
+depends on the result of `a`, and decisions nest arbitrarily deep. Recursive
+descent turns the tokens into nodes that know their children and the evaluator
+walks it top down. Three details carry most of the lesson. Keywords are
+contextual, so the lexer stays dumb and only the parser decides that a word in
+command position is `if`, which is why `echo if` prints "if". Unfinished is not
+invalid, so running out of tokens returns a distinct error that becomes the `> `
+continuation prompt instead of a complaint. And `break` deep inside an `if`
+inside a `while` cannot be a return value, so it sets a flag on the shell that
+every list evaluator checks and the loop consumes, which is exactly what real
+shells do.
 
 ### The allocator
 
@@ -217,10 +240,10 @@ nullsh/
   Makefile
   README.md
   src/
-    main.c              REPL: prompt, read, lex, parse, execute, history file
+    main.c              startup and teardown, then over to the drivers in run.c
     alloc/              nsh_malloc over mmap arenas, firstfit, buddy, heap builtin
-    shell/              lexer, expand, parser, exec, spawn, redirect, jobs,
-                        signals, builtins, history
+    shell/              lexer, expand, parser, ast, eval, func, run, exec,
+                        spawn, redirect, jobs, signals, builtins, history
     inspect/            ELF parser, formatting, the inspect builtin
     emu/                CHIP-8 cpu, display, keypad, raw terminal, emu builtin
     netmon/             AF_PACKET capture, decode, filter, print, netmon builtin
@@ -230,6 +253,8 @@ nullsh/
     harness_selftest.c  tests for the framework itself
     demo.sh             replays the README transcript
     integration/        shell scripts that drive the built shell and diff output
+  docs/
+    manual.md           the user manual
   claude-docs/
     architecture.md  code-style.md  testing.md  plans/
 ```
@@ -254,14 +279,17 @@ when `script(1)` or `ps --ppid` is missing.
 ## Limitations
 
 These are deliberate. nullsh is a shell for learning how a shell works, not a
-replacement for bash.
+replacement for bash. The complete list is the limitations table at the end of
+`docs/manual.md`.
 
-- No `&&`, no `||`, no `;` command separator. One pipeline per line, optionally
-  ending in `&`. The grammar is flat on purpose, because an AST only starts
-  paying for itself once conditionals exist.
 - No globbing. `echo *.txt` prints `*.txt`.
-- No subshells, no command substitution, no `if`, `for`, `while`, or functions.
-  There is no scripting language here, only a command line.
+- No subshells, no command substitution, no arithmetic, no `case` or `until`,
+  no `$@` or `$*`. The scripting language stops where the lesson stops.
+- Compound commands stand alone. An `if` or a loop takes no redirections, does
+  not pipe, and does not chain with `&&`, and a list cannot be backgrounded.
+  Operators connect pipelines only.
+- Functions cannot shadow builtins. Dispatch checks builtins first, so the
+  shell can never be locked out of its own controls.
 - No `~user` form.
 - No word splitting after expansion. A variable holding spaces stays one argv
   entry.
