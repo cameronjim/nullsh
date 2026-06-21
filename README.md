@@ -5,8 +5,9 @@ dependencies. It exists so that every layer under a running program can be read
 instead of assumed: process creation and PATH resolution, a memory allocator
 that replaces malloc for the entire process, pipes and file descriptor plumbing,
 terminal ownership and job control, an ELF file parser, a CHIP-8 CPU emulator,
-and a raw-socket packet decoder. Everything it needs it builds itself, so there
-is no library boundary to stop reading at.
+a raw-socket packet decoder, and a DNS client that writes its own query bytes.
+Everything it needs it builds itself, so there is no library boundary to stop
+reading at.
 
 `docs/manual.md` is the user manual: every piece of syntax, every key binding,
 every builtin and every deliberate limitation, in tables.
@@ -201,11 +202,25 @@ be unit tested opcode by opcode.
 encapsulation by peeling it apart: an Ethernet header says the payload is IPv4,
 the IPv4 header says the payload is TCP or UDP, and each layer's length field
 decides where the next one starts. Multi-byte fields on the wire are big-endian
-regardless of the host, so every read goes through `ntohs` or `ntohl`. Capture
+regardless of the host, and every read assembles them with explicit byte
+shifts, because writing the shifts is the lesson `ntohs` would hide. Capture
 uses `socket(AF_PACKET, SOCK_RAW, ...)`, which needs CAP_NET_RAW and therefore
 root. Nothing off the wire is trusted: every layer is bounds checked before a
 field is read, and a frame that does not add up is counted as malformed instead
 of crashing the shell.
+
+### resolve
+
+`src/resolve/dns.c`, `net.c`, `resolve.c`. Teaches a protocol from the client
+side: netmon watches other programs' packets, resolve makes its own. The query
+is built byte by byte from RFC 1035 (length-prefixed labels, big-endian fields
+written with the same explicit shifts netmon reads with) and sent over UDP,
+which is allowed to lose it, so the client owns the timeout and the resend.
+Reply parsing survives the format's famous trap, compression pointers, by
+requiring every pointer to jump strictly backwards and capping one name at 32
+hops, so a hostile packet cannot loop the parser. Run netmon on the interface
+in a background job and resolve in the foreground to watch your own query
+cross the wire.
 
 ## Code rules
 
@@ -247,6 +262,7 @@ nullsh/
     inspect/            ELF parser, formatting, the inspect builtin
     emu/                CHIP-8 cpu, display, keypad, raw terminal, emu builtin
     netmon/             AF_PACKET capture, decode, filter, print, netmon builtin
+    resolve/            DNS wire codec, UDP exchange, the resolve builtin
     util/               Str, Vec, line reader, NshError
   tests/
     harness.h           the whole test framework
@@ -268,10 +284,10 @@ Unit tests are not in `tests/`. Each one sits beside the code it covers as
 with `NSH_ALLOC_STRATEGY=firstfit` and once with `buddy`, so every shell test
 doubles as an allocator test. One pass is:
 
-- 508 unit test cases across 26 test binaries.
-- 213 integration checks across 9 scripts in `tests/integration/`.
+- 761 unit test cases across 31 test binaries.
+- 377 integration checks across 12 scripts in `tests/integration/`.
 
-That is 721 checks per pass and 1442 per `make test`. `sudo make test-net` adds
+That is 1138 checks per pass and 2276 per `make test`. `sudo make test-net` adds
 2 more from `tests/integration/08_netmon.sh`, which is separate because it opens
 a raw socket. The pty-driven job control script skips itself rather than failing
 when `script(1)` or `ps --ppid` is missing.
