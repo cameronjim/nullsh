@@ -7,7 +7,8 @@
 
 #include "../util/error.h"
 
-// Sends query to server:port and copies back the first datagram that arrives.
+// Sends query to server:port and copies back the first datagram that arrives
+// from that same address and port; datagrams from anyone else are dropped.
 // server is a dotted IPv4 string. The send repeats after each timeout until
 // tries runs out. A SIGINT flag handler is installed for the duration, netmon
 // style, so Ctrl-C wakes the poll. Returns NSH_OK with reply_len set,

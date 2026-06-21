@@ -20,6 +20,7 @@
 #include "../emu/emu.h"
 #include "../inspect/inspect.h"
 #include "../netmon/netmon.h"
+#include "../resolve/resolve.h"
 
 // getcwd needs a caller buffer, and a longer path fails with ERANGE.
 #define CWD_MAX 4096
@@ -227,6 +228,8 @@ static int bi_help(Shell *sh, int argc, char **argv) {
           "                   --segments, --symbols, --all\n"
           "  jobs             list the background and stopped jobs\n"
           "  netmon IFACE     decode packets, --filter tcp|udp, --port N\n"
+          "  resolve NAME     dns lookup, --server IP, --port N,\n"
+          "                   --timeout MS, --tries N\n"
           "  return [status]  leave a function, default is the last status\n"
           "  unset NAME       remove a variable from the environment\n",
           stdout);
@@ -422,6 +425,7 @@ static const BuiltinEntry BUILTINS[] = {
     {"inspect", inspect_builtin},
     {"jobs", bi_jobs},
     {"netmon", netmon_builtin},
+    {"resolve", resolve_builtin},
     {"return", bi_return},
     {"unset", bi_unset},
 };
