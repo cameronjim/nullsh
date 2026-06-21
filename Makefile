@@ -37,7 +37,9 @@ CORE_TEST_OBJS := $(BUILD)/debug/src/alloc/alloc.o $(BUILD)/debug/src/alloc/firs
                   $(BUILD)/debug/src/netmon/capture.o $(BUILD)/debug/src/netmon/netmon.o \
                   $(BUILD)/debug/src/shell/edit.o $(BUILD)/debug/src/shell/ast.o \
                   $(BUILD)/debug/src/shell/eval.o $(BUILD)/debug/src/shell/func.o \
-                  $(BUILD)/debug/src/shell/run.o $(BUILD)/debug/src/util/line.o
+                  $(BUILD)/debug/src/shell/run.o $(BUILD)/debug/src/util/line.o \
+                  $(BUILD)/debug/src/resolve/dns.o $(BUILD)/debug/src/resolve/net.o \
+                  $(BUILD)/debug/src/resolve/resolve.o
 
 UNIT_TEST_SRCS := $(shell find src -name '*_test.c')
 SELF_TEST_SRCS := $(sort $(wildcard tests/*.c))

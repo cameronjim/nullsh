@@ -38,7 +38,7 @@ Conventions every script follows: `NULLSH=$1` is passed by `make test` so script
 
 ## What one `make test` actually runs
 
-The whole suite runs twice, once with `NSH_ALLOC_STRATEGY=firstfit` and once with `buddy`, because after Phase 2 every shell test is also an allocator test. One pass is 508 unit test cases across 26 test binaries plus 213 integration checks across 9 scripts, so `make test` is 1442 checks. Nothing stops early: a failing binary or script is recorded and the run continues, then the whole thing exits 1 with `SUITE FAILED`.
+The whole suite runs twice, once with `NSH_ALLOC_STRATEGY=firstfit` and once with `buddy`, because after Phase 2 every shell test is also an allocator test. One pass is 761 unit test cases across 31 test binaries plus 377 integration checks across 12 scripts, so `make test` is 2276 checks. Nothing stops early: a failing binary or script is recorded and the run continues, then the whole thing exits 1 with `SUITE FAILED`.
 
 Two things sit outside `make test`:
 
