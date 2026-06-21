@@ -1,4 +1,4 @@
-// Lexer: one left-to-right pass over a command line, splitting it into tokens.
+// Lexer: one left-to-right pass over the input buffer, splitting it to tokens.
 
 #include "lexer.h"
 
@@ -97,10 +97,11 @@ static bool is_blank(char c) {
 }
 
 static bool is_op_char(char c) {
-    return c == '>' || c == '<' || c == '|' || c == '&';
+    return c == '>' || c == '<' || c == '|' || c == '&' || c == ';' ||
+           c == '(' || c == ')';
 }
 
-// Only for the single-character operators; >> is matched by the caller.
+// Only for the single-character operators; op_kind2 gets first refusal.
 static TokenKind op_kind(char c) {
     switch (c) {
     case '<':
@@ -109,8 +110,31 @@ static TokenKind op_kind(char c) {
         return TOK_PIPE;
     case '&':
         return TOK_AMP;
+    case ';':
+        return TOK_SEMI;
+    case '(':
+        return TOK_LPAREN;
+    case ')':
+        return TOK_RPAREN;
     default:
         return TOK_REDIR_OUT;
+    }
+}
+
+// Longest match first. TOK_WORD is the no-match answer: no operator is a word.
+static TokenKind op_kind2(char a, char b) {
+    if (a != b) {
+        return TOK_WORD;
+    }
+    switch (a) {
+    case '>':
+        return TOK_REDIR_APPEND;
+    case '&':
+        return TOK_AND_IF;
+    case '|':
+        return TOK_OR_IF;
+    default:
+        return TOK_WORD;
     }
 }
 
@@ -162,10 +186,11 @@ static size_t scan_double(const char *line, size_t i, WordBuf *w) {
     return i + 1;
 }
 
-// At end of line there is nothing to escape, so the backslash is literal.
+// At end of a line there is nothing to escape, so the backslash is literal.
+// nullsh has no line continuation, so a newline counts as an end of line here.
 static size_t scan_escape(const char *line, size_t i, WordBuf *w) {
     i++;
-    if (line[i] == '\0') {
+    if (line[i] == '\0' || line[i] == '\n') {
         str_push(&w->cur, '\\');
         return i;
     }
@@ -192,6 +217,20 @@ NshError lexer_scan(const char *line, TokenList *out) {
             i++;
             continue;
         }
+        if (c == '\n') {
+            wordbuf_finish(&w, out);
+            push_op(out, TOK_NEWLINE);
+            at_word_start = true;
+            i++;
+            continue;
+        }
+        // A comment stops at the newline, which still becomes its own token.
+        if (at_word_start && c == '#') {
+            while (line[i] != '\0' && line[i] != '\n') {
+                i++;
+            }
+            continue;
+        }
         if (at_word_start && c == '2' && line[i + 1] == '>') {
             push_op(out, TOK_REDIR_ERR);
             i += 2;
@@ -199,8 +238,9 @@ NshError lexer_scan(const char *line, TokenList *out) {
         }
         if (is_op_char(c)) {
             wordbuf_finish(&w, out);
-            if (c == '>' && line[i + 1] == '>') {
-                push_op(out, TOK_REDIR_APPEND);
+            TokenKind two = op_kind2(c, line[i + 1]);
+            if (two != TOK_WORD) {
+                push_op(out, two);
                 i += 2;
             } else {
                 push_op(out, op_kind(c));
@@ -225,7 +265,7 @@ NshError lexer_scan(const char *line, TokenList *out) {
             wordbuf_free(&w);
             token_list_free(out);
             vec_init(&out->tokens);
-            return NSH_ERR_SYNTAX;
+            return NSH_ERR_INCOMPLETE;
         }
         i = next;
         at_word_start = false;

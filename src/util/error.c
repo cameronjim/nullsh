@@ -20,6 +20,8 @@ const char *nsh_error_str(NshError e) {
         return "invalid argument";
     case NSH_EOF:
         return "end of input";
+    case NSH_INTERRUPT:
+        return "interrupted";
     }
     return "unknown error";
 }

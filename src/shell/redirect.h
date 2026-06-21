@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "expand.h"
 #include "parser.h"
 
 #include "../util/error.h"
@@ -18,7 +19,8 @@ typedef struct {
 // parent mode, and the caller must redirect_restore it even on failure.
 // NSH_ERR_IO means an open or dup failed and was reported on stderr; any
 // other error came from expanding a target word and said nothing.
-NshError redirect_apply(const Command *c, int last_status, RedirSave *save);
+NshError redirect_apply(const Command *c, const ExpandCtx *ctx,
+                        RedirSave *save);
 
 // Puts 0, 1 and 2 back and drops the copies. Safe on a zeroed init.
 void redirect_restore(RedirSave *save);

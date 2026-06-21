@@ -44,13 +44,13 @@ static NshError open_onto(const char *path, int flags, int target) {
     return NSH_OK;
 }
 
-static NshError apply_one(const Token *word, int last_status, int flags,
+static NshError apply_one(const Token *word, const ExpandCtx *ctx, int flags,
                           int target) {
     if (word == NULL) {
         return NSH_OK;
     }
     char *path = NULL;
-    NshError err = expand_word(word, last_status, &path);
+    NshError err = expand_word(word, ctx, &path);
     if (err != NSH_OK) {
         return err;
     }
@@ -75,7 +75,8 @@ static NshError save_std(RedirSave *save) {
     return NSH_OK;
 }
 
-NshError redirect_apply(const Command *c, int last_status, RedirSave *save) {
+NshError redirect_apply(const Command *c, const ExpandCtx *ctx,
+                        RedirSave *save) {
     if (c == NULL) {
         return NSH_ERR_INVALID;
     }
@@ -89,16 +90,16 @@ NshError redirect_apply(const Command *c, int last_status, RedirSave *save) {
         }
     }
 
-    NshError err = apply_one(c->redir_in, last_status, O_RDONLY, STDIN_FILENO);
+    NshError err = apply_one(c->redir_in, ctx, O_RDONLY, STDIN_FILENO);
     if (err != NSH_OK) {
         return err;
     }
     int out_flags = c->redir_append ? APPEND_FLAGS : TRUNC_FLAGS;
-    err = apply_one(c->redir_out, last_status, out_flags, STDOUT_FILENO);
+    err = apply_one(c->redir_out, ctx, out_flags, STDOUT_FILENO);
     if (err != NSH_OK) {
         return err;
     }
-    return apply_one(c->redir_err, last_status, TRUNC_FLAGS, STDERR_FILENO);
+    return apply_one(c->redir_err, ctx, TRUNC_FLAGS, STDERR_FILENO);
 }
 
 void redirect_restore(RedirSave *save) {

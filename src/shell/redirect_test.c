@@ -27,6 +27,9 @@
 
 static char g_tmp[TMP_BUF];
 
+// No status and no positionals: these targets are all plain paths.
+static const ExpandCtx g_ctx = {0, 0, NULL};
+
 static void setup(void) {
     snprintf(g_tmp, sizeof g_tmp, "/tmp/nsh_redir_XXXXXX");
     if (mkdtemp(g_tmp) == NULL) {
@@ -123,7 +126,7 @@ TEST(redirect_in_feeds_fd_zero) {
     ASSERT_TRUE(c != NULL);
 
     RedirSave save = REDIR_SAVE_INIT;
-    NshError err = redirect_apply(c, 0, &save);
+    NshError err = redirect_apply(c, &g_ctx, &save);
     char buf[READ_BUF] = {0};
     ssize_t n = (err == NSH_OK) ? read(STDIN_FILENO, buf, sizeof buf - 1) : -1;
     redirect_restore(&save);
@@ -149,17 +152,17 @@ TEST(redirect_out_truncates_and_append_extends) {
     ASSERT_TRUE(ct != NULL && ca != NULL);
 
     RedirSave save = REDIR_SAVE_INIT;
-    NshError first = redirect_apply(ct, 0, &save);
+    NshError first = redirect_apply(ct, &g_ctx, &save);
     ssize_t w1 = (first == NSH_OK) ? write(STDOUT_FILENO, "aaaa", 4) : -1;
     redirect_restore(&save);
     long after_first = file_size(path);
 
-    NshError second = redirect_apply(ct, 0, &save);
+    NshError second = redirect_apply(ct, &g_ctx, &save);
     ssize_t w2 = (second == NSH_OK) ? write(STDOUT_FILENO, "bb", 2) : -1;
     redirect_restore(&save);
     long after_trunc = file_size(path);
 
-    NshError third = redirect_apply(ca, 0, &save);
+    NshError third = redirect_apply(ca, &g_ctx, &save);
     ssize_t w3 = (third == NSH_OK) ? write(STDOUT_FILENO, "cc", 2) : -1;
     redirect_restore(&save);
     long after_append = file_size(path);
@@ -197,7 +200,7 @@ TEST(redirect_err_moves_only_fd_two) {
     bool before = fd_ident(STDOUT_FILENO, &dev, &ino);
 
     RedirSave save = REDIR_SAVE_INIT;
-    NshError err = redirect_apply(c, 0, &save);
+    NshError err = redirect_apply(c, &g_ctx, &save);
     ssize_t n = (err == NSH_OK) ? write(STDERR_FILENO, "boom", 4) : -1;
     bool during = fd_ident(STDOUT_FILENO, &after_dev, &after_ino);
     redirect_restore(&save);
@@ -231,7 +234,7 @@ TEST(save_and_restore_put_the_originals_back) {
     }
 
     RedirSave save = REDIR_SAVE_INIT;
-    NshError err = staged ? redirect_apply(c, 0, &save) : NSH_ERR_IO;
+    NshError err = staged ? redirect_apply(c, &g_ctx, &save) : NSH_ERR_IO;
     ssize_t w1 = (err == NSH_OK) ? write(STDOUT_FILENO, "in_second", 9) : -1;
     redirect_restore(&save);
     ssize_t w2 = staged ? write(STDOUT_FILENO, "in_first", 8) : -1;
@@ -278,7 +281,7 @@ TEST(open_failure_reports_io_and_leaves_the_fds_alone) {
     }
 
     RedirSave save = REDIR_SAVE_INIT;
-    NshError err = redirect_apply(c, 0, &save);
+    NshError err = redirect_apply(c, &g_ctx, &save);
     redirect_restore(&save);
 
     bool after = true;
@@ -306,7 +309,7 @@ TEST(a_bad_target_word_is_not_an_io_error) {
     ASSERT_TRUE(c != NULL);
 
     RedirSave save = REDIR_SAVE_INIT;
-    NshError err = redirect_apply(c, 0, &save);
+    NshError err = redirect_apply(c, &g_ctx, &save);
     redirect_restore(&save);
     parsed_free(&p);
 
@@ -323,7 +326,7 @@ TEST(the_target_word_is_expanded) {
     ASSERT_TRUE(c != NULL);
 
     RedirSave save = REDIR_SAVE_INIT;
-    NshError err = redirect_apply(c, 0, &save);
+    NshError err = redirect_apply(c, &g_ctx, &save);
     ssize_t n = (err == NSH_OK) ? write(STDOUT_FILENO, "z", 1) : -1;
     redirect_restore(&save);
     parsed_free(&p);

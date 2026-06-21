@@ -106,10 +106,15 @@ else
     fail=1
 fi
 
-# 11. A syntax error is reported and sets 2, and the shell keeps going.
-printf 'echo "unclosed\necho $?\n' | run
+# 11. A syntax error is reported and sets 2. An unterminated quote is not one
+# of those since phase 9: it asks for another line, so the dead end here is a
+# redirect with no target. Non-interactive input stops at a syntax error, so
+# the status comes back from the shell itself.
+printf 'echo a > | cat\necho unreached\n' | run
+code=$?
 check_contains "syntax error message" "$tmp/err" "syntax error"
-check "syntax error leaves 2" "$(cat "$tmp/out")" "2"
+check "syntax error leaves 2" "$code" "2"
+check "a syntax error stops the stream" "$(cat "$tmp/out")" ""
 
 # 12. Quoted arguments reach the program unsplit.
 printf 'echo "a   b"\n' | run
