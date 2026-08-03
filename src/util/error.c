@@ -1,5 +1,4 @@
-// Text for the NshError codes. One short lowercase phrase per code, meant to
-// read well after a "nullsh: " prefix.
+// Text for the NshError codes, meant to read after a "nullsh: " prefix.
 
 #include "error.h"
 

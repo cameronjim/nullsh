@@ -1,6 +1,4 @@
-// Growable byte string on top of nsh_malloc. The buffer is allocated up front
-// so data is never NULL, and every mutation restores the NUL terminator before
-// returning.
+// Growable byte string on top of nsh_malloc.
 
 #include "str.h"
 
@@ -8,12 +6,9 @@
 
 #include "../alloc/alloc.h"
 
-// Small enough that an empty Str is cheap, large enough that short words never
-// reallocate.
 #define STR_INIT_CAP 16
 
-// Makes room for want bytes total, counting the NUL slot. Capacity doubles, so
-// n appends of one byte cost O(n) copying overall.
+// want counts the NUL slot. Capacity doubles, so n appends cost O(n) copying.
 static void str_reserve(Str *s, size_t want) {
     if (want <= s->cap) {
         return;

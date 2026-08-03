@@ -1,6 +1,4 @@
-// Unit tests for the executor. Every case goes in as a line of shell text and
-// comes out as a status plus whatever the command did to the filesystem, so
-// the lexer, parser, expander and executor are all under test together.
+// Tests for the executor, driven by whole lines of shell text.
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -23,16 +21,14 @@
 #define PATH_BUF 4096
 #define LINE_BUF 8192
 
-// The scratch directory name is a fixed template, so a short buffer is honest
-// and keeps the compiler from suspecting a truncated snprintf.
+// A fixed template, so a short buffer keeps snprintf from looking truncated.
 #define TMP_BUF 64
 
 static Shell g_sh;
 static char g_tmp[TMP_BUF];
 static char g_cwd[PATH_BUF];
 
-// One scratch directory and one saved cwd for the whole binary, torn down in
-// main after the cases run.
+// One scratch directory and one saved cwd for the whole binary.
 static void setup(void) {
     history_init(&g_sh.history, 16);
     g_sh.last_status = 0;
@@ -61,8 +57,7 @@ static void teardown(void) {
     history_free(&g_sh.history);
 }
 
-// Builds <scratch>/name. The buffer is static and reused, so only one path can
-// be held at a time.
+// The buffer is static and reused, so only one path at a time.
 static const char *tmp_path(const char *name) {
     static char buf[PATH_BUF];
     snprintf(buf, sizeof buf, "%s/%s", g_tmp, name);
@@ -74,8 +69,7 @@ static bool file_exists(const char *path) {
     return stat(path, &st) == 0;
 }
 
-// The real path a line takes through the shell: scan, parse, execute. Returns
-// the status the shell would report, so a case reads like a transcript.
+// The real path a line takes through the shell: scan, parse, execute.
 static int run(const char *line) {
     TokenList tl = {{NULL, 0, 0}};
     Pipeline pl = {{NULL, 0, 0}, false};
@@ -89,8 +83,7 @@ static int run(const char *line) {
     return g_sh.last_status;
 }
 
-// Cases that make a child complain on purpose route stderr to /dev/null so a
-// passing run stays quiet. Returns the descriptor to hand back later.
+// Cases that make a child complain on purpose keep a passing run quiet.
 static int stderr_off(void) {
     fflush(stderr);
     int saved = dup(STDERR_FILENO);
@@ -174,8 +167,7 @@ TEST(non_executable_file_is_126) {
     ASSERT_EQ(back, 0);
 }
 
-// Only permission failures across the whole search turn into 126. A PATH
-// directory holding a matching but unrunnable file is the everyday shape.
+// Only permission failures across the whole search turn into 126.
 TEST(path_hit_without_execute_permission_is_126) {
     static char old_path[LINE_BUF];
     char bindir[PATH_BUF];
@@ -213,8 +205,7 @@ TEST(path_hit_without_execute_permission_is_126) {
 // Builtins
 
 TEST(cd_builtin_changes_the_shell_cwd) {
-    // What the kernel calls the scratch directory, which is what getcwd will
-    // report after the builtin runs even if /tmp is reached through a symlink.
+    // What the kernel calls the scratch dir, even if /tmp is a symlink.
     char want[PATH_BUF];
     ASSERT_EQ(chdir(g_tmp), 0);
     bool got_want = getcwd(want, sizeof want) != NULL;
@@ -264,13 +255,11 @@ TEST(variables_expand_before_the_program_sees_them) {
 
 TEST(single_quotes_keep_the_dollar_literal) {
     ASSERT_EQ(run("export NSH_T_Q=live"), 0);
-    // Single quotes hand the child the four characters $NSH, so only the
-    // child's own shell can resolve them, and it agrees on the value.
+    // Single quotes pass $NSH_T_Q through, so only the child resolves it.
     ASSERT_EQ(run("/bin/sh -c 'test \"$NSH_T_Q\" = live'"), 0);
     ASSERT_EQ(run("unset NSH_T_Q"), 0);
 }
 
-// $? is the previous command's status, visible to the next line.
 TEST(dollar_question_carries_the_last_status) {
     ASSERT_EQ(run("/bin/false"), 1);
     ASSERT_EQ(run("export NSH_T_STATUS=$?"), 0);
@@ -325,15 +314,14 @@ TEST(background_is_refused_without_running_anything) {
     ASSERT_TRUE(!file_exists(tmp_path("bg_ran")));
 }
 
-// An empty pipeline is not a command, so the status must survive it.
+// An empty pipeline is not a command, so the status survives it.
 TEST(an_empty_line_leaves_the_status_alone) {
     ASSERT_EQ(run("/bin/false"), 1);
     ASSERT_EQ(run("   "), 1);
     ASSERT_EQ(run(""), 1);
 }
 
-// TEST_MAIN owns main, and these cases need a scratch directory around the
-// whole run, so the loop is spelled out here instead.
+// These cases need a scratch directory around the whole run, so main is here.
 int main(void) {
     setup();
     int failures = 0;

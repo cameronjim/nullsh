@@ -1,6 +1,4 @@
-// Growable byte string. After str_init the buffer is always a readable C
-// string, so callers never have to test data for NULL, and embedded NUL bytes
-// are preserved in len even though they truncate the C-string view.
+// Growable byte string, always a readable C string after str_init.
 
 #pragma once
 
@@ -12,13 +10,13 @@ typedef struct {
     size_t cap; // allocated bytes, including the NUL slot
 } Str;
 
-// Leaves s holding the empty string. Every other call assumes this ran first.
+// Every other call assumes this ran first.
 void str_init(Str *s);
 
-// Releases the buffer and zeroes s, so calling it twice is safe.
+// Zeroes s, so calling it twice is safe.
 void str_free(Str *s);
 
-// Truncates to length 0 and keeps the capacity for reuse.
+// Keeps the capacity for reuse.
 void str_clear(Str *s);
 
 void str_push(Str *s, char c);
@@ -27,6 +25,5 @@ void str_append(Str *s, const char *cstr);
 // p need not be NUL terminated and may contain NUL bytes.
 void str_append_n(Str *s, const char *p, size_t n);
 
-// Hands the buffer to the caller, who frees it with nsh_free, and re-inits s
-// to a fresh empty string.
+// Hands the buffer to the caller, who nsh_frees it, and re-inits s.
 char *str_take(Str *s);

@@ -1,5 +1,4 @@
-// Fixed-capacity ring of command lines plus the file format behind it: one
-// entry per line, oldest first. The ring never reallocates, it evicts.
+// Fixed-capacity ring of command lines, saved one entry per line oldest first.
 
 #include "history.h"
 
@@ -9,8 +8,7 @@
 
 #include "../alloc/alloc.h"
 
-// libc strdup allocates with libc malloc, which nullsh code outside src/alloc
-// is not allowed to touch, so the copy is made by hand.
+// strdup would use libc malloc, which is off limits outside src/alloc.
 static char *dup_cstr(const char *s, size_t len) {
     char *copy = nsh_malloc(len + 1);
     memcpy(copy, s, len);
@@ -52,8 +50,7 @@ void history_add(History *h, const char *line) {
     if (h == NULL || h->lines == NULL || line == NULL || line[0] == '\0') {
         return;
     }
-    // Only a repeat of the immediately previous command is dropped. The same
-    // command typed again later is a genuine new entry.
+    // Only an immediate repeat is dropped; the same line later is a new entry.
     if (h->len > 0) {
         const char *newest = h->lines[slot_of(h, h->len - 1)];
         if (strcmp(newest, line) == 0) {
@@ -84,8 +81,7 @@ const char *history_get(const History *h, size_t i) {
     return h->lines[slot_of(h, i)];
 }
 
-// Growable read buffer. A history line has no length limit, so nothing here
-// reads into a fixed array.
+// A history line has no length limit, so the read buffer grows.
 typedef struct {
     char *data;
     size_t len;
@@ -170,8 +166,7 @@ NshError history_save(const History *h, const char *path) {
         }
     }
 
-    // Data can still fail to reach the disk at close time, so the close result
-    // decides success just as much as the writes do.
+    // Data can still fail to reach the disk at close, so fclose decides too.
     if (fclose(f) != 0 && err == NSH_OK) {
         err = NSH_ERR_IO;
     }

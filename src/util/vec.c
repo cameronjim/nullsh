@@ -1,6 +1,4 @@
-// Growable array of void pointers. Capacity starts at VEC_INIT_CAP and
-// doubles when full. Every allocation goes through the nsh_* wrappers, which
-// abort rather than return NULL, so nothing here checks for a failed alloc.
+// Growable array of void pointers.
 
 #include "vec.h"
 
@@ -8,8 +6,7 @@
 
 #define VEC_INIT_CAP 8
 
-// Doubling cannot overflow: reaching a capacity where cap * 2 * sizeof(void *)
-// wraps would require an already-live array larger than the address space.
+// Doubling cannot overflow: the live array would exceed the address space.
 static void vec_grow(Vec *v) {
     size_t new_cap = v->cap ? v->cap * 2 : VEC_INIT_CAP;
     v->items = nsh_realloc(v->items, new_cap * sizeof(*v->items));

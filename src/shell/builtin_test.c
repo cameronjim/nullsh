@@ -1,7 +1,4 @@
-// Unit tests for the builtin table: dispatch by name, the exit status each
-// builtin reports for every argument shape, and the side effects that matter,
-// the process cwd, the environment, and the Shell struct itself. Builtins that
-// only print are checked for status, since capturing stdout needs a fork.
+// Tests for the builtin table: dispatch, exit status, and side effects.
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -28,8 +25,7 @@ static void shell_stop(Shell *sh) {
     history_free(&sh->history);
 }
 
-// Copies the current value of name into out, or leaves out empty. Returns
-// false when the variable is unset, so a test can restore it exactly.
+// Returns false when the variable is unset, so a test can restore it exactly.
 static bool env_save(const char *name, char *out, size_t out_size) {
     const char *value = getenv(name);
     out[0] = '\0';
@@ -204,7 +200,6 @@ TEST(cd_without_args_and_without_home_fails) {
 
     ASSERT_EQ(rc, 1);
     ASSERT_TRUE(got_cwd);
-    // A failed cd leaves the shell exactly where it was.
     ASSERT_STR_EQ(now, start);
 }
 
@@ -514,14 +509,12 @@ TEST(history_prints_and_returns_zero) {
     ASSERT_TRUE(fn != NULL);
 
     char *argv[] = {"history", NULL};
-    // Empty history is still success.
     ASSERT_EQ(fn(&sh, 1, argv), 0);
 
     history_add(&sh.history, "echo one");
     history_add(&sh.history, "echo two");
     ASSERT_EQ(history_count(&sh.history), 2);
     ASSERT_EQ(fn(&sh, 1, argv), 0);
-    // Printing must not disturb the ring.
     ASSERT_EQ(history_count(&sh.history), 2);
     ASSERT_STR_EQ(history_get(&sh.history, 0), "echo one");
     shell_stop(&sh);
