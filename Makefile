@@ -21,7 +21,8 @@ DBG_BIN := $(BUILD)/nullsh-debug
 # build/debug/src/x/foo.o) plus the core objects every module leans on.
 # main.o is never linked into a test binary because it owns main().
 CORE_TEST_OBJS := $(BUILD)/debug/src/alloc/alloc.o $(BUILD)/debug/src/util/error.o \
-                  $(BUILD)/debug/src/util/str.o $(BUILD)/debug/src/util/vec.o
+                  $(BUILD)/debug/src/util/str.o $(BUILD)/debug/src/util/vec.o \
+                  $(BUILD)/debug/src/shell/lexer.o $(BUILD)/debug/src/shell/expand.o
 
 UNIT_TEST_SRCS := $(shell find src -name '*_test.c')
 SELF_TEST_SRCS := $(sort $(wildcard tests/*.c))
