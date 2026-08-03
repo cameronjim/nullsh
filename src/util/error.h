@@ -10,7 +10,9 @@ typedef enum {
     NSH_ERR_SYNTAX,
     NSH_ERR_IO,
     NSH_ERR_NOT_FOUND,
-    NSH_ERR_INVALID
+    NSH_ERR_INVALID,
+    // Not an error: end of input reached with nothing read.
+    NSH_EOF
 } NshError;
 
 // Never returns NULL, including for values outside the enum.
