@@ -1,0 +1,4 @@
+.claude
+build/
+*.o
+/notes.md
