@@ -1,5 +1,5 @@
-// nullsh entry point. Phase 0 is a REPL stub: prompt, read a line, honor exit
-// and blank input, and say plainly that running commands waits for phase 1.
+// nullsh entry point. The REPL itself: prompt, read, lex, parse, execute, and
+// the history file that carries lines from one run into the next.
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -8,71 +8,112 @@
 #include <string.h>
 #include <unistd.h>
 
-static const char PROMPT[] = "nullsh> ";
+#include "alloc/alloc.h"
+#include "shell/exec.h"
+#include "shell/lexer.h"
+#include "shell/parser.h"
+#include "shell/shell.h"
+#include "util/line.h"
+#include "util/str.h"
 
-// Points at the first whitespace delimited word in line and reports its
-// length. Returns NULL when the line holds nothing but whitespace.
-static const char *first_word(const char *line, size_t *out_len) {
-    while (*line == ' ' || *line == '\t') {
-        line++;
+#define HISTORY_CAP 1000
+#define HISTORY_FILE "/.nullsh_history"
+#define CWD_MAX 4096
+
+// $HOME/.nullsh_history, or NULL when HOME says nothing. Caller nsh_frees it.
+static char *history_path(void) {
+    const char *home = getenv("HOME");
+    if (home == NULL || home[0] == '\0') {
+        return NULL;
     }
-    const char *start = line;
-    while (*line != '\0' && *line != ' ' && *line != '\t') {
-        line++;
+    Str p;
+    str_init(&p);
+    str_append(&p, home);
+    str_append(&p, HISTORY_FILE);
+    char *out = str_take(&p);
+    str_free(&p);
+    return out;
+}
+
+// "nullsh:~/code$ ". The tilde replaces HOME only on a whole path component,
+// so /homework never shows up as ~work.
+static void print_prompt(void) {
+    char cwd[CWD_MAX];
+    const char *home = getenv("HOME");
+    size_t hlen = (home == NULL) ? 0 : strlen(home);
+    if (getcwd(cwd, sizeof cwd) == NULL) {
+        fputs("nullsh$ ", stdout);
+    } else if (hlen > 0 && strncmp(cwd, home, hlen) == 0 &&
+               (cwd[hlen] == '\0' || cwd[hlen] == '/')) {
+        printf("nullsh:~%s$ ", cwd + hlen);
+    } else {
+        printf("nullsh:%s$ ", cwd);
     }
-    *out_len = (size_t)(line - start);
-    return *out_len == 0 ? NULL : start;
+    fflush(stdout);
 }
 
 int main(void) {
-    // The prompt goes out only on a terminal, so piped scripts see clean output.
-    const int interactive = isatty(STDIN_FILENO);
+    Shell sh = {{NULL, 0, 0, 0}, 0, false, 0};
+    history_init(&sh.history, HISTORY_CAP);
+    char *hist_file = history_path();
+    if (hist_file != NULL) {
+        // A first run has no file yet, and that is not worth a word.
+        history_load(&sh.history, hist_file);
+    }
 
-    // getline allocates and grows this buffer inside libc, so it is the one
-    // block in nullsh released with libc free instead of nsh_free.
-    char *line = NULL;
-    size_t cap = 0;
-    int status = 0;
+    const int interactive = isatty(STDIN_FILENO);
+    Str line;
+    str_init(&line);
+    TokenList tl = {{NULL, 0, 0}};
+    Pipeline pl = {{NULL, 0, 0}, false};
 
     for (;;) {
         if (interactive) {
-            fputs(PROMPT, stdout);
-            if (fflush(stdout) != 0) {
-                perror("nullsh: fflush");
-                status = 1;
-                break;
-            }
+            print_prompt();
         }
-
-        ssize_t len = getline(&line, &cap, stdin);
-        if (len < 0) {
-            if (ferror(stdin)) {
-                perror("nullsh: getline");
-                status = 1;
-            }
+        NshError err = line_read(stdin, &line);
+        if (err == NSH_EOF) {
             if (interactive) {
                 fputc('\n', stdout);
             }
             break;
         }
-
-        if (len > 0 && line[len - 1] == '\n') {
-            line[len - 1] = '\0';
-        }
-
-        size_t word_len = 0;
-        const char *word = first_word(line, &word_len);
-        if (word == NULL) {
-            continue;
-        }
-        if (word_len == 4 && strncmp(word, "exit", 4) == 0) {
+        if (err != NSH_OK) {
+            fputs("nullsh: read error on stdin\n", stderr);
+            sh.last_status = 1;
             break;
         }
+        if (line.len == 0) {
+            continue;
+        }
 
-        fprintf(stderr, "nullsh: %.*s: command execution arrives in phase 1\n",
-                (int)word_len, word);
+        // History records what was typed, so a line that fails to parse is
+        // still there to recall and fix.
+        history_add(&sh.history, line.data);
+        if (lexer_scan(line.data, &tl) != NSH_OK ||
+            parser_parse(&tl, &pl) != NSH_OK) {
+            fputs("nullsh: syntax error\n", stderr);
+            sh.last_status = 2;
+        } else {
+            exec_pipeline(&sh, &pl);
+        }
+        token_list_free(&tl);
+        pipeline_free(&pl);
+        if (sh.want_exit) {
+            break;
+        }
     }
-
-    free(line);
-    return status;
+    if (hist_file != NULL) {
+        if (history_save(&sh.history, hist_file) != NSH_OK) {
+            fprintf(stderr, "nullsh: could not save history to %s\n",
+                    hist_file);
+        }
+        nsh_free(hist_file);
+    }
+    token_list_free(&tl);
+    pipeline_free(&pl);
+    str_free(&line);
+    history_free(&sh.history);
+    // Ctrl-D leaves with the status of the last command, like bash.
+    return sh.want_exit ? sh.exit_code : sh.last_status;
 }

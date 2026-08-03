@@ -1,6 +1,6 @@
 # nullsh architecture
 
-Updated at the end of every phase. Current as of: Phase 0 (skeleton).
+Updated at the end of every phase. Current as of: Phase 1 (shell core).
 
 ## Big picture
 
@@ -21,8 +21,8 @@ The learning tools (`inspect`, `netmon`, `emu`, `heap`) are builtins. They live 
 | Directory | Owns | Status |
 |---|---|---|
 | `src/alloc/` | nsh_malloc/free/realloc/calloc, later strategies + heap builtin | libc wrapper |
-| `src/util/` | Str, Vec, NshError | skeleton |
-| `src/shell/` | lexer, expand, parser, exec, builtins, history, later jobs/signals/redirect | Phase 1 |
+| `src/util/` | Str, Vec, line reader, NshError | done |
+| `src/shell/` | lexer, expand, parser, exec, builtins, history; jobs/signals/redirect later | Phase 1 done |
 | `src/inspect/` | ELF parsing and printing | Phase 5 |
 | `src/emu/` | CHIP-8 cpu, display, keypad | Phase 6 |
 | `src/netmon/` | raw socket capture, header decode, print | Phase 7 |
@@ -35,6 +35,10 @@ The learning tools (`inspect`, `netmon`, `emu`, `heap`) are builtins. They live 
 - **One global for jobs, one for signal flags.** POSIX forces both. Everything else is passed as explicit arguments; there is no shell "context singleton".
 - **Errors are NshError return codes.** Functions that can fail return NshError and write results through out-params. The REPL prints `nsh_error_str()` messages and never exits on user error.
 - **Tests link module objects, not the whole shell.** Each `foo_test.c` builds with just what it needs, which keeps modules honestly decoupled; main.c is excluded from test links.
+- **Out of memory aborts.** The nsh_* allocators never return NULL; a failed allocation prints and aborts. Call sites stay clean and a shell that cannot allocate a prompt buffer has nothing useful left to do anyway.
+- **Expansion happens at execution time, not parse time.** The parser stores unexpanded word tokens; exec expands them against the current environment and `$?`. No word splitting after expansion: a variable holding spaces stays one argv entry (a documented nullsh simplification).
+- **The parser consumes the token list.** Word tokens move into Command structs, operator tokens are freed, and the list is left valid and empty. One owner at every moment, which is why the suite stays clean under ASan.
+- **PATH search is hand rolled in the child.** Not execvp: the error accounting is the lesson. Only a search that hit nothing but EACCES reports 126; a non-runnable file (ENOEXEC) stops the search rather than being masked as not found.
 
 ## Build
 
