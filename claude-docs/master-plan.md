@@ -15,7 +15,7 @@ Decisions made with the user:
 - C17, `-std=c17 -Wall -Wextra -Werror -pedantic`, POSIX headers only, no third-party libs.
 - Every change ships tests in the same commit. Homegrown assert harness; unit tests in `*_test.c` beside source; integration tests are shell scripts that drive nullsh and diff output.
 - `make debug` = `-g -O0 -fsanitize=address,undefined`. Targets: `make`, `make test`, `make clean`, `make debug`, `make release`. Makefile only.
-- No non-test file over ~500 lines. `//` comments only, module header comment on every file. `#pragma once`.
+- No non-test file over ~500 lines. `//` comments only, single-line only (no stacked blocks), strictly minimal; one-line module header comment on every file. `#pragma once`.
 - Explicit error handling: every syscall and allocation checked; errors propagate via return codes; the shell never segfaults on bad input.
 - No global mutable state except signal flags (`volatile sig_atomic_t`) and the job list. `snake_case` functions, `PascalCase` structs, `SCREAMING_SNAKE` constants, module-name prefixes on public functions, `static` by default.
 - No em dashes, no "utilize"/"leverage" in any prose.
