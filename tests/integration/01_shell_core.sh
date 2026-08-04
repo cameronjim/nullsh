@@ -1,6 +1,6 @@
 #!/bin/sh
 # End to end tests for the phase 1 shell: real commands, expansion, builtins,
-# exit status, the polite refusals, and history that survives a run.
+# exit status, the background refusal, and history that survives a run.
 # Usage: 01_shell_core.sh <path to nullsh binary>, supplied by make test.
 
 set -u
@@ -77,22 +77,21 @@ printf 'false\nexit\n' | run
 code=$?
 check "bare exit after false" "$code" "1"
 
-# 8. Pipes are refused politely and the shell keeps reading.
+# 8. A pipe runs both stages and the shell keeps reading after it.
 printf 'echo a | cat\necho still here\nexit 3\n' | run
 code=$?
-check_contains "pipe refusal names phase 3" "$tmp/err" "pipes arrive in phase 3"
-check "shell survives the refusal" "$(cat "$tmp/out")" "still here"
+check "pipe output" "$(sed -n 1p "$tmp/out")" "a"
+check "shell keeps reading after a pipe" "$(sed -n 2p "$tmp/out")" "still here"
 check "later exit still controls the status" "$code" "3"
 
-# 9. Redirects get the same treatment.
-printf 'echo a > %s/should_not_exist\n' "$tmp" | run
-check_contains "redirect refusal names phase 3" "$tmp/err" \
-    "redirection arrives in phase 3"
-if [ -e "$tmp/should_not_exist" ]; then
-    echo "  FAIL redirect refusal ran the command anyway"
-    fail=1
+# 9. A redirect creates the file and takes the output out of stdout.
+printf 'echo a > %s/redirected\n' "$tmp" | run
+check "redirect says nothing on stdout" "$(cat "$tmp/out")" ""
+if [ -f "$tmp/redirected" ]; then
+    check "redirect wrote the file" "$(cat "$tmp/redirected")" "a"
 else
-    echo "  ok   redirect refusal ran nothing"
+    echo "  FAIL redirect did not create $tmp/redirected"
+    fail=1
 fi
 
 # 10. Background gets the phase 4 message.

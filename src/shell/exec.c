@@ -15,6 +15,7 @@
 
 #include "builtin.h"
 #include "expand.h"
+#include "redirect.h"
 
 #include "../alloc/alloc.h"
 #include "../util/str.h"
@@ -29,24 +30,6 @@ extern char **environ;
 
 // A bad expansion is a usage error, not a failed command.
 #define STATUS_BAD_SUBST 2
-
-// Names what phase 1 cannot run yet, so nothing is silently dropped.
-static const char *unsupported_reason(const Pipeline *pl) {
-    if (pl->cmds.len > 1) {
-        return "pipes arrive in phase 3";
-    }
-    for (size_t i = 0; i < pl->cmds.len; i++) {
-        const Command *c = vec_get(&pl->cmds, i);
-        if (c != NULL && (c->redir_in != NULL || c->redir_out != NULL ||
-                          c->redir_err != NULL)) {
-            return "redirection arrives in phase 3";
-        }
-    }
-    if (pl->background) {
-        return "job control arrives in phase 4";
-    }
-    return NULL;
-}
 
 static void argv_free(char **argv, int argc) {
     if (argv == NULL) {
@@ -149,6 +132,14 @@ static void exec_search_path(char **argv) {
     die_child(argv[0], "command not found", STATUS_NOT_FOUND);
 }
 
+// Child side only: the last thing a stage does.
+static void exec_argv(char **argv) {
+    if (strchr(argv[0], '/') != NULL) {
+        exec_direct(argv);
+    }
+    exec_search_path(argv);
+}
+
 // waitpid is retried on EINTR so a signal never abandons the child.
 static int wait_for_child(pid_t pid) {
     int status = 0;
@@ -167,7 +158,27 @@ static int wait_for_child(pid_t pid) {
     return 1;
 }
 
-static int run_external(char **argv) {
+static bool has_redirect(const Command *c) {
+    return c->redir_in != NULL || c->redir_out != NULL || c->redir_err != NULL;
+}
+
+// An open failure is a command that never ran; the rest came from expansion.
+static int redirect_status(NshError err) {
+    if (err == NSH_ERR_IO) {
+        return 1;
+    }
+    fprintf(stderr, "nullsh: bad substitution\n");
+    return STATUS_BAD_SUBST;
+}
+
+// Child side only.
+static void die_redirect(NshError err) {
+    int status = redirect_status(err);
+    fflush(stderr);
+    _exit(status);
+}
+
+static int run_external(const Command *c, int last_status, char **argv) {
     // Flush first, or the child inherits the buffers and reprints them.
     fflush(NULL);
 
@@ -177,12 +188,152 @@ static int run_external(char **argv) {
         return 1;
     }
     if (pid == 0) {
-        if (strchr(argv[0], '/') != NULL) {
-            exec_direct(argv);
+        NshError err = redirect_apply(c, last_status, NULL);
+        if (err != NSH_OK) {
+            die_redirect(err);
         }
-        exec_search_path(argv);
+        exec_argv(argv);
     }
     return wait_for_child(pid);
+}
+
+// A builtin runs in the shell, so its redirects move the shell's own fds.
+static int run_builtin(Shell *sh, const Command *c, BuiltinFn fn, int argc,
+                       char **argv) {
+    if (!has_redirect(c)) {
+        return fn(sh, argc, argv);
+    }
+    RedirSave save = REDIR_SAVE_INIT;
+    NshError err = redirect_apply(c, sh->last_status, &save);
+    int status = (err == NSH_OK) ? fn(sh, argc, argv) : redirect_status(err);
+    redirect_restore(&save);
+    return status;
+}
+
+static int run_simple(Shell *sh, const Command *c) {
+    char **argv = NULL;
+    int argc = 0;
+    if (build_argv(c, sh->last_status, &argv, &argc) != NSH_OK) {
+        fprintf(stderr, "nullsh: bad substitution\n");
+        return STATUS_BAD_SUBST;
+    }
+    if (argc == 0) {
+        argv_free(argv, argc);
+        return sh->last_status;
+    }
+    if (argv[0][0] == '\0') {
+        // Every word expanded away, so there is no name to look up.
+        fprintf(stderr, "nullsh: : command not found\n");
+        argv_free(argv, argc);
+        return STATUS_NOT_FOUND;
+    }
+
+    BuiltinFn fn = builtin_lookup(argv[0]);
+    int status = (fn != NULL) ? run_builtin(sh, c, fn, argc, argv)
+                              : run_external(c, sh->last_status, argv);
+    argv_free(argv, argc);
+    return status;
+}
+
+// Pipe i lives in fds[2 * i] and fds[2 * i + 1]; a closed slot holds -1.
+static void close_fds(int *fds, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (fds[i] >= 0 && close(fds[i]) != 0) {
+            fprintf(stderr, "nullsh: close: %s\n", strerror(errno));
+        }
+        fds[i] = -1;
+    }
+}
+
+// One stage, in the child. An fd of -1 means that end keeps what it inherited.
+static void run_stage(Shell *sh, const Command *c, int in_fd, int out_fd,
+                      int *fds, size_t nfds) {
+    if (in_fd >= 0 && dup2(in_fd, STDIN_FILENO) < 0) {
+        die_child("dup2", strerror(errno), 1);
+    }
+    if (out_fd >= 0 && dup2(out_fd, STDOUT_FILENO) < 0) {
+        die_child("dup2", strerror(errno), 1);
+    }
+    // Every spare copy of a write end must go or no reader ever sees EOF.
+    close_fds(fds, nfds);
+
+    char **argv = NULL;
+    int argc = 0;
+    if (build_argv(c, sh->last_status, &argv, &argc) != NSH_OK) {
+        fprintf(stderr, "nullsh: bad substitution\n");
+        fflush(stderr);
+        _exit(STATUS_BAD_SUBST);
+    }
+    if (argc == 0) {
+        _exit(0);
+    }
+    if (argv[0][0] == '\0') {
+        die_child("", "command not found", STATUS_NOT_FOUND);
+    }
+
+    // File redirects land after the pipe wiring, so an explicit > wins.
+    NshError err = redirect_apply(c, sh->last_status, NULL);
+    if (err != NSH_OK) {
+        die_redirect(err);
+    }
+
+    BuiltinFn fn = builtin_lookup(argv[0]);
+    if (fn != NULL) {
+        int status = fn(sh, argc, argv);
+        fflush(NULL);
+        _exit(status);
+    }
+    exec_argv(argv);
+}
+
+static int run_pipeline(Shell *sh, const Pipeline *pl) {
+    size_t n = pl->cmds.len;
+    size_t nfds = (n - 1) * 2;
+    int *fds = nsh_calloc(nfds, sizeof(*fds));
+    for (size_t i = 0; i < nfds; i++) {
+        fds[i] = -1;
+    }
+    for (size_t i = 0; i + 1 < n; i++) {
+        if (pipe(&fds[i * 2]) != 0) {
+            fprintf(stderr, "nullsh: pipe: %s\n", strerror(errno));
+            close_fds(fds, nfds);
+            nsh_free(fds);
+            return 1;
+        }
+    }
+
+    pid_t *pids = nsh_calloc(n, sizeof(*pids));
+    size_t forked = 0;
+    for (size_t i = 0; i < n; i++) {
+        const Command *c = vec_get(&pl->cmds, i);
+        fflush(NULL);
+        pid_t pid = fork();
+        if (pid < 0) {
+            fprintf(stderr, "nullsh: fork: %s\n", strerror(errno));
+            break;
+        }
+        if (pid == 0) {
+            int in_fd = (i == 0) ? -1 : fds[(i - 1) * 2];
+            int out_fd = (i + 1 == n) ? -1 : fds[i * 2 + 1];
+            run_stage(sh, c, in_fd, out_fd, fds, nfds);
+            _exit(STATUS_NOT_EXEC);
+        }
+        pids[forked++] = pid;
+    }
+
+    close_fds(fds, nfds);
+    nsh_free(fds);
+
+    // The last stage owns $?; a stage that never forked leaves 1 behind.
+    int status = 1;
+    for (size_t i = 0; i < forked; i++) {
+        int reaped = wait_for_child(pids[i]);
+        if (i + 1 == n) {
+            status = reaped;
+        }
+    }
+    nsh_free(pids);
+    return status;
 }
 
 NshError exec_pipeline(Shell *sh, Pipeline *pl) {
@@ -192,37 +343,16 @@ NshError exec_pipeline(Shell *sh, Pipeline *pl) {
     if (pl->cmds.len == 0) {
         return NSH_OK;
     }
-
-    const char *later = unsupported_reason(pl);
-    if (later != NULL) {
-        fprintf(stderr, "nullsh: %s\n", later);
+    if (pl->background) {
+        fprintf(stderr, "nullsh: job control arrives in phase 4\n");
         sh->last_status = 1;
         return NSH_OK;
     }
 
-    const Command *c = vec_get(&pl->cmds, 0);
-    char **argv = NULL;
-    int argc = 0;
-    if (build_argv(c, sh->last_status, &argv, &argc) != NSH_OK) {
-        fprintf(stderr, "nullsh: bad substitution\n");
-        sh->last_status = STATUS_BAD_SUBST;
-        return NSH_OK;
+    if (pl->cmds.len == 1) {
+        sh->last_status = run_simple(sh, vec_get(&pl->cmds, 0));
+    } else {
+        sh->last_status = run_pipeline(sh, pl);
     }
-    if (argc == 0) {
-        argv_free(argv, argc);
-        return NSH_OK;
-    }
-    if (argv[0][0] == '\0') {
-        // Every word expanded away, so there is no name to look up.
-        fprintf(stderr, "nullsh: : command not found\n");
-        sh->last_status = STATUS_NOT_FOUND;
-        argv_free(argv, argc);
-        return NSH_OK;
-    }
-
-    BuiltinFn fn = builtin_lookup(argv[0]);
-    sh->last_status = (fn != NULL) ? fn(sh, argc, argv) : run_external(argv);
-
-    argv_free(argv, argc);
     return NSH_OK;
 }
