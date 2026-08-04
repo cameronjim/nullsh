@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -19,7 +20,8 @@
 // POSIX forces this: the saved state has to outlive the call that took it.
 static struct termios saved_termios;
 static int saved_flags;
-static bool raw_active;
+// A signal handler reads and clears this, so it cannot be a plain bool.
+static volatile sig_atomic_t raw_active;
 
 static void warn(const char *what) {
     fprintf(stderr, "nullsh: emu: %s: %s\n", what, strerror(errno));
@@ -95,6 +97,16 @@ void term_exit_raw(void) {
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios) != 0) {
         warn("tcsetattr");
     }
+}
+
+void term_emergency_restore(void) {
+    if (!raw_active) {
+        return;
+    }
+    raw_active = false;
+    (void)!write(STDOUT_FILENO, ESC_SHOW_CURSOR, sizeof ESC_SHOW_CURSOR - 1);
+    (void)fcntl(STDIN_FILENO, F_SETFL, saved_flags);
+    (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
 }
 
 int term_read_key(void) {

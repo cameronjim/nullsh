@@ -17,6 +17,7 @@
 
 #include "../alloc/alloc.h"
 #include "../alloc/heap_builtin.h"
+#include "../emu/emu.h"
 #include "../inspect/inspect.h"
 
 // getcwd needs a caller buffer, and a longer path fails with ERANGE.
@@ -158,6 +159,7 @@ static int bi_help(Shell *sh, int argc, char **argv) {
           "  bg [%N]          resume a stopped job in the background\n"
           "  cd [dir]         change directory, no argument means $HOME,\n"
           "                   a single - means $OLDPWD\n"
+          "  emu ROM          run a chip-8 rom, esc quits\n"
           "  exit [status]    leave the shell, default is the last status\n"
           "  export NAME=VAL  set a variable for the shell and its children\n"
           "  fg [%N]          bring a job to the foreground and wait for it\n"
@@ -347,8 +349,9 @@ typedef struct {
 } BuiltinEntry;
 
 static const BuiltinEntry BUILTINS[] = {
-    {"bg", bi_bg},          {"cd", bi_cd},     {"exit", bi_exit},
-    {"export", bi_export},  {"fg", bi_fg},     {"heap", heap_builtin},
+    {"bg", bi_bg},          {"cd", bi_cd},     {"emu", emu_builtin},
+    {"exit", bi_exit},      {"export", bi_export},
+    {"fg", bi_fg},          {"heap", heap_builtin},
     {"help", bi_help},      {"history", bi_history},
     {"inspect", inspect_builtin},              {"jobs", bi_jobs},
     {"unset", bi_unset},
