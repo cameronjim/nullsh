@@ -1,4 +1,4 @@
-// The ten builtins and the static table that maps a name to one of them.
+// The builtins and the static table that maps a name to one of them.
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -351,12 +351,19 @@ typedef struct {
 } BuiltinEntry;
 
 static const BuiltinEntry BUILTINS[] = {
-    {"bg", bi_bg},          {"cd", bi_cd},     {"emu", emu_builtin},
-    {"exit", bi_exit},      {"export", bi_export},
-    {"fg", bi_fg},          {"heap", heap_builtin},
-    {"help", bi_help},      {"history", bi_history},
-    {"inspect", inspect_builtin},              {"jobs", bi_jobs},
-    {"netmon", netmon_builtin},                {"unset", bi_unset},
+    {"bg", bi_bg},
+    {"cd", bi_cd},
+    {"emu", emu_builtin},
+    {"exit", bi_exit},
+    {"export", bi_export},
+    {"fg", bi_fg},
+    {"heap", heap_builtin},
+    {"help", bi_help},
+    {"history", bi_history},
+    {"inspect", inspect_builtin},
+    {"jobs", bi_jobs},
+    {"netmon", netmon_builtin},
+    {"unset", bi_unset},
 };
 
 BuiltinFn builtin_lookup(const char *name) {

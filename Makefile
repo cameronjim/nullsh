@@ -1,5 +1,5 @@
 # nullsh build.
-# Targets: all (= release), debug, release, test, clean.
+# Targets: all (= release), debug, release, test, test-net, demo, clean.
 # Every object and binary lands under build/, so clean is one rm -rf.
 
 CC := gcc
@@ -45,7 +45,7 @@ INTEGRATION_SH := $(filter-out tests/integration/08_netmon.sh,\
 TEST_BINS := $(foreach t,$(UNIT_TEST_SRCS),$(BUILD)/tests/$(subst /,_,$(basename $(t)))) \
              $(foreach t,$(SELF_TEST_SRCS),$(BUILD)/tests/$(basename $(notdir $(t))))
 
-.PHONY: all release debug test test-net clean
+.PHONY: all release debug test test-net demo clean
 
 all: release
 
@@ -105,6 +105,11 @@ test: $(DBG_BIN) $(TEST_BINS)
 # The raw socket needs root; the script skips cleanly when it is not there.
 test-net: $(DBG_BIN)
 	@sh tests/integration/08_netmon.sh ./$(DBG_BIN)
+
+# Replays the README transcript against the release binary. Not part of test:
+# the suite must not fail because a document drifted.
+demo: $(REL_BIN)
+	@sh tests/demo.sh ./$(REL_BIN)
 
 clean:
 	rm -rf $(BUILD)
