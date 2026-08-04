@@ -51,7 +51,7 @@ static void print_prompt(void) {
 }
 
 int main(void) {
-    Shell sh = {{NULL, 0, 0, 0}, 0, false, 0};
+    Shell sh = {{NULL, 0, 0, 0}, 0, false, 0, false, -1, 0};
     history_init(&sh.history, HISTORY_CAP);
     char *hist_file = history_path();
     if (hist_file != NULL) {
