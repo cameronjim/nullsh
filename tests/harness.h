@@ -1,6 +1,4 @@
-// The whole nullsh test framework. TEST(name) registers a case at load time,
-// the ASSERT_* macros report file:line plus both values and abandon the case,
-// and TEST_MAIN() runs everything and exits nonzero if anything failed.
+// The nullsh test framework: TEST, the ASSERT_* macros, and TEST_MAIN.
 
 #pragma once
 
@@ -19,8 +17,7 @@ typedef struct {
 static NshTestCase nsh_test_cases[NSH_MAX_TESTS];
 static int nsh_test_count;
 
-// The body a TEST() expands into takes a hidden int *nsh_failed, which is the
-// flag the ASSERT_* macros below set before returning early.
+// The hidden nsh_failed flag is what the ASSERT_* macros set before returning.
 #define TEST(test_name)                                                       \
     static void nsh_test_##test_name(int *nsh_failed);                        \
     __attribute__((constructor)) static void nsh_reg_##test_name(void) {      \

@@ -24,8 +24,9 @@ These rules are fixed. Every commit follows all of them.
 ## Comments
 
 - `//` only, never `/* */`.
-- Every `.c` and `.h` opens with one to three lines describing the module.
-- Inline comments only where the code cannot speak for itself: the invariant, the platform quirk, the syscall behavior being relied on. Never narrate the obvious.
+- One line per comment. Never stack `//` lines into paragraph blocks.
+- Strictly minimal and simple. A comment earns its place only for an invariant, a platform quirk, or syscall behavior being relied on. Never narrate the obvious, never explain what plain code already says.
+- Every `.c` and `.h` opens with exactly one `//` line naming what the module does.
 
 ## Errors
 

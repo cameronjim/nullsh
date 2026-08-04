@@ -1,6 +1,4 @@
-// Lexer: a single left-to-right pass over one command line. Whitespace splits
-// words, operators terminate them, and each quoting run becomes a WordSeg that
-// records whether a later expansion pass is allowed to look inside it.
+// Lexer: one left-to-right pass over a command line, splitting it into tokens.
 
 #include "lexer.h"
 
@@ -11,14 +9,10 @@
 #include "../util/str.h"
 #include "../util/vec.h"
 
-// Returned by the quote scanners when the closing quote is missing. A real
-// index can never reach it: the line would have to fill the address space.
+// A real index can never reach this: the line would have to fill memory.
 #define SCAN_UNTERMINATED ((size_t)-1)
 
-// A word under construction. cur collects bare text that has not been closed
-// into a segment yet; segs holds the runs already closed. A word is pending
-// while either one is non-empty, which is what makes "" a real empty word:
-// the quote scanner pushes an empty segment even though no byte was read.
+// A word is pending while either part is non-empty, which makes "" a word.
 typedef struct {
     Vec segs;  // WordSeg*
     Str cur;
@@ -71,15 +65,14 @@ static void wordbuf_push_seg(WordBuf *w, char *text, bool expand) {
     vec_push(&w->segs, s);
 }
 
-// Closes the run of bare text collected so far. Empty bare text is not a
-// segment; only quotes can introduce an empty one.
+// Empty bare text is not a segment; only quotes can introduce an empty one.
 static void wordbuf_flush_bare(WordBuf *w) {
     if (w->cur.len > 0) {
         wordbuf_push_seg(w, str_take(&w->cur), true);
     }
 }
 
-// Moves the pending word, if any, into tl and leaves w ready for the next one.
+// Moves the pending word into tl and leaves w ready for the next one.
 static void wordbuf_finish(WordBuf *w, TokenList *tl) {
     if (!wordbuf_pending(w)) {
         return;
@@ -121,14 +114,12 @@ static TokenKind op_kind(char c) {
     }
 }
 
-// Inside double quotes a backslash is an escape only before these four. Before
-// anything else it stays in the text as a literal backslash.
+// Inside double quotes a backslash escapes only these four.
 static bool dq_escapes(char c) {
     return c == '$' || c == '"' || c == '\\' || c == '`';
 }
 
-// i points at the opening quote. Returns the index just past the closing one.
-// Nothing inside is special, not even a backslash.
+// i points at the opening quote. Nothing inside is special, not even a \.
 static size_t scan_single(const char *line, size_t i, WordBuf *w) {
     Str q;
     str_init(&q);
@@ -147,7 +138,7 @@ static size_t scan_single(const char *line, size_t i, WordBuf *w) {
     return i + 1;
 }
 
-// i points at the opening quote. Returns the index just past the closing one.
+// i points at the opening quote.
 static size_t scan_double(const char *line, size_t i, WordBuf *w) {
     Str q;
     str_init(&q);
@@ -171,8 +162,7 @@ static size_t scan_double(const char *line, size_t i, WordBuf *w) {
     return i + 1;
 }
 
-// Outside quotes a backslash escapes whatever follows, including a space or a
-// quote. At end of line there is nothing to escape, so it is literal text.
+// At end of line there is nothing to escape, so the backslash is literal.
 static size_t scan_escape(const char *line, size_t i, WordBuf *w) {
     i++;
     if (line[i] == '\0') {
@@ -190,8 +180,7 @@ NshError lexer_scan(const char *line, TokenList *out) {
     WordBuf w;
     wordbuf_init(&w);
 
-    // True at line start and after any blank or operator, which is exactly
-    // where a 2 is allowed to open a "2>" redirect rather than be word text.
+    // Only at a word start can a 2 open a "2>" instead of being word text.
     bool at_word_start = true;
     size_t i = 0;
 

@@ -1,6 +1,4 @@
-// Proves the harness itself works: registration runs, every assertion form
-// accepts a true case, and the runner reports success. Failure paths would
-// need a fork to observe, so they are left alone.
+// Proves the harness registers cases and accepts every assertion form.
 
 #include "harness.h"
 
@@ -25,7 +23,7 @@ TEST(assert_str_eq_accepts_equal_strings) {
 }
 
 TEST(registration_saw_every_test) {
-    // Four TEST() blocks live in this file, all registered before main ran.
+    // Four TEST() blocks in this file, all registered before main ran.
     ASSERT_EQ(nsh_test_count, 4);
 }
 

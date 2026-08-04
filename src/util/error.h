@@ -1,6 +1,4 @@
-// Error codes shared by every nullsh module. Functions return NshError and
-// the caller turns it into text with nsh_error_str. No errno smuggling, no
-// fprintf from deep inside a helper.
+// Error codes shared by every nullsh module.
 
 #pragma once
 

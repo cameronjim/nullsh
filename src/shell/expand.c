@@ -1,7 +1,4 @@
-// Variable expansion. One pass per expandable segment: copy bytes through
-// until a $, decide which of the three forms it starts, append the replacement,
-// continue after it. Substituted text is never rescanned, so a value holding
-// "$HOME" stays those five characters, and no expansion ever splits a word.
+// Variable expansion: one pass per segment, never rescanning what it wrote.
 
 #include "expand.h"
 
@@ -14,7 +11,7 @@
 #include "../util/str.h"
 #include "../util/vec.h"
 
-// Widest $? can get is a sign plus the digits of an int, far under this.
+// A sign plus the digits of an int fit well under this.
 #define STATUS_BUF 24
 
 static bool is_name_start(char c) {
@@ -25,9 +22,7 @@ static bool is_name_char(char c) {
     return is_name_start(c) || (c >= '0' && c <= '9');
 }
 
-// Appends the environment value of the len-byte name at p, or nothing when the
-// variable is unset. getenv needs a NUL terminated key, and the name here is a
-// slice of the segment, so it gets its own copy.
+// getenv needs a NUL terminated key, and the name here is only a slice.
 static void append_env(Str *out, const char *p, size_t len) {
     char *key = nsh_malloc(len + 1);
     memcpy(key, p, len);
@@ -68,9 +63,7 @@ static NshError expand_segment(const char *text, int last_status, Str *out) {
             i += 2;
         } else if (next == '{') {
             size_t n = name_len(text + i + 2);
-            // Empty braces and a name not closed by } inside this segment are
-            // both errors; the brace form never continues into the next
-            // segment, since quoting cannot split a variable reference.
+            // A brace form never continues into the next segment.
             if (n == 0 || text[i + 2 + n] != '}') {
                 return NSH_ERR_SYNTAX;
             }
@@ -119,7 +112,7 @@ NshError expand_word(const Token *tok, int last_status, char **out) {
     }
 
     *out = str_take(&acc);
-    // str_take handed the buffer over and left acc holding a fresh empty one.
+    // str_take left acc holding a fresh buffer, which still needs freeing.
     str_free(&acc);
     return NSH_OK;
 }

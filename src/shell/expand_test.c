@@ -1,7 +1,4 @@
-// Unit tests for variable expansion. Tokens are built by hand here because the
-// lexer is a separate module; each test owns its segments and its environment
-// variables and cleans both up. Every variable used is NSH_TEST_ prefixed so a
-// stray one can never collide with the real environment.
+// Tests for variable expansion, with tokens built by hand.
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -43,7 +40,7 @@ static void word_free(Token *t) {
     vec_free(&t->segs);
 }
 
-// The common shape: one segment, expand it, hand back both code and result.
+// The common shape: one segment in, code and result out.
 static NshError expand_one(const char *text, bool expand, int last_status,
                            char **out) {
     Token t;
@@ -160,7 +157,7 @@ TEST(status_can_repeat_in_one_segment) {
     nsh_free(out);
 }
 
-// $?x is the status followed by a literal x; ? never absorbs what follows.
+// The ? never absorbs what follows it.
 TEST(status_does_not_swallow_following_text) {
     char *out = NULL;
     ASSERT_EQ(expand_one("$?abc", true, 7, &out), NSH_OK);
@@ -197,7 +194,6 @@ TEST(variable_expands_at_start_middle_and_end) {
     unsetenv("NSH_TEST_A");
 }
 
-// A bare name runs as far as the name charset allows and stops there.
 TEST(bare_name_stops_at_the_first_non_name_character) {
     setenv("NSH_TEST_A", "V", 1);
     setenv("NSH_TEST_A2", "W", 1);
@@ -236,7 +232,7 @@ TEST(lone_dollar_is_literal) {
     nsh_free(out);
 }
 
-// Positional parameters are not supported, so $5 is four characters of text.
+// Positional parameters are not supported, so $5 is literal text.
 TEST(dollar_digit_is_literal) {
     char *out = NULL;
     ASSERT_EQ(expand_one("$5", true, 0, &out), NSH_OK);
@@ -286,7 +282,7 @@ TEST(value_with_spaces_stays_one_string) {
     unsetenv("NSH_TEST_A");
 }
 
-// Substituted text is data, not source: it is never scanned for more dollars.
+// Substituted text is data, never rescanned for more dollars.
 TEST(expanded_value_is_not_rescanned) {
     setenv("NSH_TEST_A", "$NSH_TEST_B", 1);
     setenv("NSH_TEST_B", "inner", 1);
@@ -356,8 +352,7 @@ TEST(non_word_token_is_invalid) {
     ASSERT_TRUE(out == NULL);
 }
 
-// "$NSH_TEST_A"'$NSH_TEST_A'$NSH_TEST_A, the shape the lexer produces for
-// mixed quoting, plus a brace form and a literal dollar in one word.
+// The shape the lexer produces for mixed quoting, plus a brace and a dollar.
 TEST(multi_segment_word_mixes_every_rule) {
     setenv("NSH_TEST_A", "one two", 1);
     setenv("NSH_TEST_B", "B", 1);
@@ -408,8 +403,7 @@ TEST(long_value_survives_intact) {
     unsetenv("NSH_TEST_BIG");
 }
 
-// A name far longer than any stack buffer would hold, to prove the key copy
-// is heap sized rather than fixed.
+// Longer than any stack buffer, to prove the key copy is heap sized.
 TEST(very_long_name_is_handled) {
     const size_t n = 4000;
     char *text = nsh_malloc(n + 2);
