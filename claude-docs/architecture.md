@@ -1,6 +1,6 @@
 # nullsh architecture
 
-Updated at the end of every phase. Current as of: Phase 4 (job control).
+Updated at the end of every phase. Current as of: Phase 5 (elf inspector).
 
 ## Big picture
 
@@ -23,7 +23,7 @@ The learning tools (`inspect`, `netmon`, `emu`, `heap`) are builtins. They live 
 | `src/alloc/` | nsh_* over mmap arenas, firstfit + buddy strategies, guard canaries, heap builtin | done |
 | `src/util/` | Str, Vec, line reader, NshError | done |
 | `src/shell/` | lexer, expand, parser, exec, spawn, redirect, jobs, signals, builtins, history | Phase 4 done |
-| `src/inspect/` | ELF parsing and printing | Phase 5 |
+| `src/inspect/` | elf.c defensive parser, print.c formatting, inspect builtin | done |
 | `src/emu/` | CHIP-8 cpu, display, keypad | Phase 6 |
 | `src/netmon/` | raw socket capture, header decode, print | Phase 7 |
 | `tests/` | harness.h, integration scripts | Phase 0 |
