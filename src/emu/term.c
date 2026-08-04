@@ -22,6 +22,8 @@ static struct termios saved_termios;
 static int saved_flags;
 // A signal handler reads and clears this, so it cannot be a plain bool.
 static volatile sig_atomic_t raw_active;
+// Only the screen mode touched the cursor, and the restore has to match.
+static volatile sig_atomic_t raw_owns_screen;
 
 static void warn(const char *what) {
     fprintf(stderr, "nullsh: emu: %s: %s\n", what, strerror(errno));
@@ -44,7 +46,7 @@ static NshError write_all(const char *s) {
     return NSH_OK;
 }
 
-NshError term_enter_raw(void) {
+NshError term_enter_raw_mode(TermRawMode mode) {
     if (raw_active) {
         return NSH_OK;
     }
@@ -58,43 +60,60 @@ NshError term_enter_raw(void) {
         return NSH_ERR_IO;
     }
 
+    bool screen = (mode == TERM_RAW_SCREEN);
+    // The emulator wants stale keys dropped; the editor must keep type-ahead,
+    // since it enters and leaves raw mode once per line.
+    int how = screen ? TCSAFLUSH : TCSADRAIN;
     struct termios raw = saved_termios;
-    // ISIG stays on: Ctrl-C and Ctrl-Z must still reach job control.
-    // OPOST stays on: rendered rows end in a bare '\n' and need the CR.
+    // In screen mode ISIG stays on: Ctrl-C and Ctrl-Z must reach job control.
+    // OPOST stays on either way: rendered rows end in a bare '\n'.
     raw.c_lflag &= (tcflag_t) ~(ECHO | ICANON | IEXTEN);
     raw.c_iflag &= (tcflag_t) ~(ICRNL | IXON);
-    raw.c_cc[VMIN] = 0;
-    raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) {
+    if (screen) {
+        raw.c_cc[VMIN] = 0;
+        raw.c_cc[VTIME] = 0;
+    } else {
+        // The editor wants the 0x03 and 0x04 bytes themselves, not signals.
+        raw.c_lflag &= (tcflag_t)~ISIG;
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+    }
+    if (tcsetattr(STDIN_FILENO, how, &raw) != 0) {
         warn("tcsetattr");
         return NSH_ERR_IO;
     }
-    if (fcntl(STDIN_FILENO, F_SETFL, saved_flags | O_NONBLOCK) < 0) {
+    if (screen && fcntl(STDIN_FILENO, F_SETFL, saved_flags | O_NONBLOCK) < 0) {
         warn("fcntl");
-        if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios) != 0) {
+        if (tcsetattr(STDIN_FILENO, how, &saved_termios) != 0) {
             warn("tcsetattr");
         }
         return NSH_ERR_IO;
     }
 
     raw_active = true;
-    if (write_all(ESC_HIDE_CURSOR ESC_CLEAR) != NSH_OK) {
+    raw_owns_screen = screen;
+    if (screen && write_all(ESC_HIDE_CURSOR ESC_CLEAR) != NSH_OK) {
         term_exit_raw();
         return NSH_ERR_IO;
     }
     return NSH_OK;
 }
 
+NshError term_enter_raw(void) { return term_enter_raw_mode(TERM_RAW_SCREEN); }
+
 void term_exit_raw(void) {
     if (!raw_active) {
         return;
     }
     raw_active = false;
-    (void)write_all(ESC_SHOW_CURSOR);
+    if (raw_owns_screen) {
+        (void)write_all(ESC_SHOW_CURSOR);
+    }
     if (fcntl(STDIN_FILENO, F_SETFL, saved_flags) < 0) {
         warn("fcntl");
     }
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios) != 0) {
+    int how = raw_owns_screen ? TCSAFLUSH : TCSADRAIN;
+    if (tcsetattr(STDIN_FILENO, how, &saved_termios) != 0) {
         warn("tcsetattr");
     }
 }
@@ -104,7 +123,9 @@ void term_emergency_restore(void) {
         return;
     }
     raw_active = false;
-    (void)!write(STDOUT_FILENO, ESC_SHOW_CURSOR, sizeof ESC_SHOW_CURSOR - 1);
+    if (raw_owns_screen) {
+        (void)!write(STDOUT_FILENO, ESC_SHOW_CURSOR, sizeof ESC_SHOW_CURSOR - 1);
+    }
     (void)fcntl(STDIN_FILENO, F_SETFL, saved_flags);
     (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
 }
@@ -117,4 +138,24 @@ int term_read_key(void) {
         return -1;
     }
     return (int)ch;
+}
+
+NshError term_read_byte(unsigned char *out) {
+    if (out == NULL) {
+        return NSH_ERR_INVALID;
+    }
+    for (;;) {
+        ssize_t n = read(STDIN_FILENO, out, 1);
+        if (n == 1) {
+            return NSH_OK;
+        }
+        if (n == 0) {
+            return NSH_EOF;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        warn("read");
+        return NSH_ERR_IO;
+    }
 }

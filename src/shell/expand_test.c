@@ -419,6 +419,133 @@ TEST(very_long_name_is_handled) {
     nsh_free(text);
 }
 
+TEST(lone_tilde_becomes_home) {
+    setenv("HOME", "/home/tester", 1);
+    char *out = NULL;
+    ASSERT_EQ(expand_one("~", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "/home/tester");
+    nsh_free(out);
+}
+
+TEST(tilde_slash_becomes_home_slash) {
+    setenv("HOME", "/home/tester", 1);
+    char *out = NULL;
+    ASSERT_EQ(expand_one("~/x", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "/home/tester/x");
+    nsh_free(out);
+    ASSERT_EQ(expand_one("~/", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "/home/tester/");
+    nsh_free(out);
+    ASSERT_EQ(expand_one("~/a/b/c", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "/home/tester/a/b/c");
+    nsh_free(out);
+}
+
+// ~user is not supported, so anything other than / after the tilde is text.
+TEST(tilde_user_stays_literal) {
+    setenv("HOME", "/home/tester", 1);
+    char *out = NULL;
+    ASSERT_EQ(expand_one("~x", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "~x");
+    nsh_free(out);
+    ASSERT_EQ(expand_one("~root/bin", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "~root/bin");
+    nsh_free(out);
+    ASSERT_EQ(expand_one("~~", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "~~");
+    nsh_free(out);
+}
+
+TEST(tilde_off_the_first_character_stays_literal) {
+    setenv("HOME", "/home/tester", 1);
+    char *out = NULL;
+    ASSERT_EQ(expand_one("x~", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "x~");
+    nsh_free(out);
+    ASSERT_EQ(expand_one("a/~/b", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "a/~/b");
+    nsh_free(out);
+    ASSERT_EQ(expand_one("x~/y", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "x~/y");
+    nsh_free(out);
+}
+
+TEST(tilde_in_a_quoted_segment_stays_literal) {
+    setenv("HOME", "/home/tester", 1);
+    char *out = NULL;
+    ASSERT_EQ(expand_one("~/x", false, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "~/x");
+    nsh_free(out);
+    ASSERT_EQ(expand_one("~", false, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "~");
+    nsh_free(out);
+}
+
+TEST(unset_or_empty_home_leaves_the_tilde_alone) {
+    unsetenv("HOME");
+    char *out = NULL;
+    ASSERT_EQ(expand_one("~", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "~");
+    nsh_free(out);
+    ASSERT_EQ(expand_one("~/x", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "~/x");
+    nsh_free(out);
+    // An empty HOME would turn ~/x into /x, which points somewhere else.
+    setenv("HOME", "", 1);
+    ASSERT_EQ(expand_one("~/x", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "~/x");
+    nsh_free(out);
+    setenv("HOME", "/home/tester", 1);
+}
+
+// The tilde belongs to the word, so a later segment never triggers it, and a
+// lone ~ followed by more segments is not at the end of the word either.
+TEST(tilde_only_expands_on_the_words_first_segment) {
+    setenv("HOME", "/home/tester", 1);
+    Token t;
+    word_init(&t);
+    word_push(&t, "a", true);
+    word_push(&t, "~/x", true);
+    char *out = NULL;
+    ASSERT_EQ(expand_word(&t, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "a~/x");
+    nsh_free(out);
+    word_free(&t);
+
+    word_init(&t);
+    word_push(&t, "~", true);
+    word_push(&t, "x", false);
+    ASSERT_EQ(expand_word(&t, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "~x");
+    nsh_free(out);
+    word_free(&t);
+
+    // A tilde-slash prefix still expands when more segments follow it.
+    word_init(&t);
+    word_push(&t, "~/", true);
+    word_push(&t, "x y", false);
+    ASSERT_EQ(expand_word(&t, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "/home/tester/x y");
+    nsh_free(out);
+    word_free(&t);
+}
+
+// Substitution happens once, so HOME holding a dollar sign is not rescanned.
+TEST(tilde_and_variables_coexist_in_one_segment) {
+    setenv("HOME", "/home/tester", 1);
+    setenv("NSH_TEST_A", "sub", 1);
+    char *out = NULL;
+    ASSERT_EQ(expand_one("~/$NSH_TEST_A/end", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "/home/tester/sub/end");
+    nsh_free(out);
+    setenv("HOME", "$NSH_TEST_A", 1);
+    ASSERT_EQ(expand_one("~/x", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "$NSH_TEST_A/x");
+    nsh_free(out);
+    setenv("HOME", "/home/tester", 1);
+    unsetenv("NSH_TEST_A");
+}
+
 TEST(null_out_pointer_is_rejected) {
     Token t;
     word_init(&t);

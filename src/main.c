@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "alloc/alloc.h"
+#include "shell/edit.h"
 #include "shell/exec.h"
 #include "shell/jobs.h"
 #include "shell/lexer.h"
@@ -43,19 +44,25 @@ static char *history_path(void) {
 }
 
 // The tilde replaces HOME only on a whole path component, never in /homework.
-static void print_prompt(void) {
+// The editor needs the prompt as text, so it is built rather than printed.
+static void prompt_build(Str *p) {
     char cwd[CWD_MAX];
     const char *home = getenv("HOME");
     size_t hlen = (home == NULL) ? 0 : strlen(home);
+    str_clear(p);
     if (getcwd(cwd, sizeof cwd) == NULL) {
-        fputs("nullsh$ ", stdout);
-    } else if (hlen > 0 && strncmp(cwd, home, hlen) == 0 &&
-               (cwd[hlen] == '\0' || cwd[hlen] == '/')) {
-        printf("nullsh:~%s$ ", cwd + hlen);
-    } else {
-        printf("nullsh:%s$ ", cwd);
+        str_append(p, "nullsh$ ");
+        return;
     }
-    fflush(stdout);
+    if (hlen > 0 && strncmp(cwd, home, hlen) == 0 &&
+        (cwd[hlen] == '\0' || cwd[hlen] == '/')) {
+        str_append(p, "nullsh:~");
+        str_append(p, cwd + hlen);
+    } else {
+        str_append(p, "nullsh:");
+        str_append(p, cwd);
+    }
+    str_append(p, "$ ");
 }
 
 // Dispositions are installed either way: a script should not die to a SIGINT
@@ -103,16 +110,23 @@ int main(void) {
     }
 
     Str line;
+    Str prompt;
     str_init(&line);
+    str_init(&prompt);
     TokenList tl = {{NULL, 0, 0}};
     Pipeline pl = {{NULL, 0, 0}, false};
 
     for (;;) {
         reap_jobs();
+        NshError err;
         if (sh.interactive) {
-            print_prompt();
+            prompt_build(&prompt);
+            // Raw mode is entered and left inside the call, so a command that
+            // runs next inherits a cooked terminal.
+            err = edit_read_line(prompt.data, &sh.history, &line);
+        } else {
+            err = line_read(stdin, &line);
         }
-        NshError err = line_read(stdin, &line);
         if (err == NSH_EOF) {
             if (sh.interactive) {
                 fputc('\n', stdout);
@@ -153,6 +167,7 @@ int main(void) {
     token_list_free(&tl);
     pipeline_free(&pl);
     str_free(&line);
+    str_free(&prompt);
     history_free(&sh.history);
     jobs_free_all();
     // Ctrl-D leaves with the status of the last command, like bash.
