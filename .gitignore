@@ -2,3 +2,5 @@ build/
 *.o
 # CJ's personal scratchpad, never committed
 /notes.md
+# local claude code settings
+/.claude/
