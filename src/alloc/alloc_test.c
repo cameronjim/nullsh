@@ -281,4 +281,166 @@ TEST(underflow_into_the_prefix_aborts_on_free) {
     ASSERT_EQ(WTERMSIG(status), SIGABRT);
 }
 
+// Runs body in a forked child with stderr silenced and reports how the child died.
+static int run_child(void (*body)(void)) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+        }
+        body();
+        _exit(0);
+    }
+    int status = 0;
+    if (pid < 0 || waitpid(pid, &status, 0) != pid) {
+        return -1;
+    }
+    return status;
+}
+
+#define ASSERT_ABORTED(status)                                                \
+    do {                                                                      \
+        ASSERT_TRUE((status) >= 0);                                           \
+        ASSERT_TRUE(!(WIFEXITED(status) && WEXITSTATUS(status) == 0));        \
+        ASSERT_TRUE(WIFSIGNALED(status));                                     \
+        ASSERT_EQ(WTERMSIG(status), SIGABRT);                                 \
+    } while (0)
+
+static const char *const BOTH_STRATEGIES[2] = {"firstfit", "buddy"};
+
+static void child_double_free(void) {
+    void *p = nsh_malloc(64);
+    nsh_free(p);
+    nsh_free(p);
+}
+
+TEST(double_free_aborts) {
+    for (int i = 0; i < 2; i++) {
+        ASSERT_EQ(alloc_set_strategy(BOTH_STRATEGIES[i]), NSH_OK);
+        int status = run_child(child_double_free);
+        ASSERT_ABORTED(status);
+    }
+    ASSERT_EQ(alloc_set_strategy("firstfit"), NSH_OK);
+}
+
+static void child_interior_free(void) {
+    unsigned char *p = nsh_malloc(256);
+    memset(p, 0x33, 256);
+    nsh_free(p + 8);
+}
+
+TEST(interior_pointer_free_aborts) {
+    int status = run_child(child_interior_free);
+    ASSERT_ABORTED(status);
+}
+
+static void child_unknown_free(void) {
+    unsigned char on_stack[32];
+    memset(on_stack, 0, sizeof on_stack);
+    nsh_free(on_stack);
+}
+
+TEST(unknown_pointer_free_aborts) {
+    int status = run_child(child_unknown_free);
+    ASSERT_ABORTED(status);
+}
+
+static void child_oom(void) {
+    unsigned char *p = nsh_malloc((size_t)64 << 20);
+    p[0] = 1;
+}
+
+TEST(oom_aborts) {
+    for (int i = 0; i < 2; i++) {
+        ASSERT_EQ(alloc_set_strategy(BOTH_STRATEGIES[i]), NSH_OK);
+        int status = run_child(child_oom);
+        ASSERT_ABORTED(status);
+    }
+    ASSERT_EQ(alloc_set_strategy("firstfit"), NSH_OK);
+}
+
+TEST(freed_memory_is_poisoned) {
+    for (int i = 0; i < 2; i++) {
+        ASSERT_EQ(alloc_set_strategy(BOTH_STRATEGIES[i]), NSH_OK);
+        unsigned char *p = nsh_malloc(512);
+        memset(p, 0xAB, 512);
+        nsh_free(p);
+        // Deliberate use after free: the arena stays mapped, so reading the poison back is defined at the machine level.
+        ASSERT_TRUE(pattern_ok(p + 16, 512 - 16, 0xDD));
+    }
+    ASSERT_EQ(alloc_set_strategy("firstfit"), NSH_OK);
+}
+
+#define SWITCH_SLOTS 128
+#define SWITCH_OPS 10000
+#define SWITCH_MAX 2048
+#define SWITCH_EVERY 100
+
+static Shadow g_switch[SWITCH_SLOTS];
+
+TEST(soak_survives_live_strategy_switches) {
+    AllocStats ff_before, bd_before, after;
+    ASSERT_EQ(alloc_set_strategy("firstfit"), NSH_OK);
+    ASSERT_EQ(alloc_get_stats(&ff_before), NSH_OK);
+    ASSERT_EQ(alloc_set_strategy("buddy"), NSH_OK);
+    ASSERT_EQ(alloc_get_stats(&bd_before), NSH_OK);
+    memset(g_switch, 0, sizeof g_switch);
+    srand(4242);
+    for (int op = 0; op < SWITCH_OPS; op++) {
+        if (op % SWITCH_EVERY == 0) {
+            ASSERT_EQ(alloc_set_strategy(
+                          BOTH_STRATEGIES[(op / SWITCH_EVERY) % 2]),
+                      NSH_OK);
+        }
+        Shadow *s = &g_switch[rand() % SWITCH_SLOTS];
+        int what = rand() % 4;
+        size_t n = (size_t)(rand() % SWITCH_MAX) + 1;
+        if (s->p == NULL) {
+            s->size = n;
+            s->fill = (unsigned char)(rand() & 0xFF);
+            s->p = (what == 1) ? nsh_calloc(n, 1) : nsh_malloc(n);
+            ASSERT_TRUE(s->p != NULL);
+            memset(s->p, s->fill, n);
+            continue;
+        }
+        ASSERT_TRUE(pattern_ok(s->p, s->size, s->fill));
+        if (what == 3) {
+            size_t keep = n < s->size ? n : s->size;
+            unsigned char *q = nsh_realloc(s->p, n);
+            ASSERT_TRUE(q != NULL);
+            ASSERT_TRUE(pattern_ok(q, keep, s->fill));
+            s->p = q;
+            s->size = n;
+            memset(s->p, s->fill, n);
+        } else {
+            nsh_free(s->p);
+            s->p = NULL;
+            s->size = 0;
+        }
+    }
+    for (int i = 0; i < SWITCH_SLOTS; i++) {
+        if (g_switch[i].p != NULL) {
+            ASSERT_TRUE(pattern_ok(g_switch[i].p, g_switch[i].size,
+                                   g_switch[i].fill));
+            nsh_free(g_switch[i].p);
+            g_switch[i].p = NULL;
+            g_switch[i].size = 0;
+        }
+    }
+    ASSERT_EQ(alloc_set_strategy("firstfit"), NSH_OK);
+    ASSERT_EQ(alloc_get_stats(&after), NSH_OK);
+    ASSERT_EQ(after.used_bytes, ff_before.used_bytes);
+    ASSERT_EQ((long long)after.total_frees - (long long)after.total_mallocs,
+              (long long)ff_before.total_frees -
+                  (long long)ff_before.total_mallocs);
+    ASSERT_EQ(alloc_set_strategy("buddy"), NSH_OK);
+    ASSERT_EQ(alloc_get_stats(&after), NSH_OK);
+    ASSERT_EQ(after.used_bytes, bd_before.used_bytes);
+    ASSERT_EQ((long long)after.total_frees - (long long)after.total_mallocs,
+              (long long)bd_before.total_frees -
+                  (long long)bd_before.total_mallocs);
+    ASSERT_EQ(alloc_set_strategy("firstfit"), NSH_OK);
+}
+
 TEST_MAIN()
