@@ -17,6 +17,7 @@
 
 #include "../alloc/alloc.h"
 #include "../alloc/heap_builtin.h"
+#include "../inspect/inspect.h"
 
 // getcwd needs a caller buffer, and a longer path fails with ERANGE.
 #define CWD_MAX 4096
@@ -163,6 +164,8 @@ static int bi_help(Shell *sh, int argc, char **argv) {
           "  heap [args]      allocator stats, strategy [NAME], or dump\n"
           "  help             print this list\n"
           "  history          print the command history, oldest first\n"
+          "  inspect FILE     show elf structure: header, --sections,\n"
+          "                   --segments, --symbols, --all\n"
           "  jobs             list the background and stopped jobs\n"
           "  unset NAME       remove a variable from the environment\n",
           stdout);
@@ -347,7 +350,8 @@ static const BuiltinEntry BUILTINS[] = {
     {"bg", bi_bg},          {"cd", bi_cd},     {"exit", bi_exit},
     {"export", bi_export},  {"fg", bi_fg},     {"heap", heap_builtin},
     {"help", bi_help},      {"history", bi_history},
-    {"jobs", bi_jobs},      {"unset", bi_unset},
+    {"inspect", inspect_builtin},              {"jobs", bi_jobs},
+    {"unset", bi_unset},
 };
 
 BuiltinFn builtin_lookup(const char *name) {
