@@ -32,16 +32,20 @@ CORE_TEST_OBJS := $(BUILD)/debug/src/alloc/alloc.o $(BUILD)/debug/src/alloc/firs
                   $(BUILD)/debug/src/inspect/print.o $(BUILD)/debug/src/inspect/inspect.o \
                   $(BUILD)/debug/src/emu/cpu.o $(BUILD)/debug/src/emu/display.o \
                   $(BUILD)/debug/src/emu/keypad.o $(BUILD)/debug/src/emu/term.o \
-                  $(BUILD)/debug/src/emu/emu.o
+                  $(BUILD)/debug/src/emu/emu.o $(BUILD)/debug/src/netmon/decode.o \
+                  $(BUILD)/debug/src/netmon/print.o $(BUILD)/debug/src/netmon/filter.o \
+                  $(BUILD)/debug/src/netmon/capture.o $(BUILD)/debug/src/netmon/netmon.o
 
 UNIT_TEST_SRCS := $(shell find src -name '*_test.c')
 SELF_TEST_SRCS := $(sort $(wildcard tests/*.c))
-INTEGRATION_SH := $(sort $(wildcard tests/integration/*.sh))
+# 08_netmon.sh needs a raw socket, so it belongs to test-net, not to test.
+INTEGRATION_SH := $(filter-out tests/integration/08_netmon.sh,\
+                    $(sort $(wildcard tests/integration/*.sh)))
 
 TEST_BINS := $(foreach t,$(UNIT_TEST_SRCS),$(BUILD)/tests/$(subst /,_,$(basename $(t)))) \
              $(foreach t,$(SELF_TEST_SRCS),$(BUILD)/tests/$(basename $(notdir $(t))))
 
-.PHONY: all release debug test clean
+.PHONY: all release debug test test-net clean
 
 all: release
 
@@ -97,6 +101,10 @@ test: $(DBG_BIN) $(TEST_BINS)
 	done; \
 	if [ $$fail -ne 0 ]; then echo "SUITE FAILED"; exit 1; fi; \
 	echo "SUITE PASSED (firstfit + buddy)"
+
+# The raw socket needs root; the script skips cleanly when it is not there.
+test-net: $(DBG_BIN)
+	@sh tests/integration/08_netmon.sh ./$(DBG_BIN)
 
 clean:
 	rm -rf $(BUILD)

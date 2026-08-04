@@ -19,6 +19,7 @@
 #include "../alloc/heap_builtin.h"
 #include "../emu/emu.h"
 #include "../inspect/inspect.h"
+#include "../netmon/netmon.h"
 
 // getcwd needs a caller buffer, and a longer path fails with ERANGE.
 #define CWD_MAX 4096
@@ -169,6 +170,7 @@ static int bi_help(Shell *sh, int argc, char **argv) {
           "  inspect FILE     show elf structure: header, --sections,\n"
           "                   --segments, --symbols, --all\n"
           "  jobs             list the background and stopped jobs\n"
+          "  netmon IFACE     decode packets, --filter tcp|udp, --port N\n"
           "  unset NAME       remove a variable from the environment\n",
           stdout);
     return 0;
@@ -354,7 +356,7 @@ static const BuiltinEntry BUILTINS[] = {
     {"fg", bi_fg},          {"heap", heap_builtin},
     {"help", bi_help},      {"history", bi_history},
     {"inspect", inspect_builtin},              {"jobs", bi_jobs},
-    {"unset", bi_unset},
+    {"netmon", netmon_builtin},                {"unset", bi_unset},
 };
 
 BuiltinFn builtin_lookup(const char *name) {
