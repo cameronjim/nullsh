@@ -1,15 +1,19 @@
-// The seven builtins and the static table that maps a name to one of them.
+// The ten builtins and the static table that maps a name to one of them.
 
 #define _POSIX_C_SOURCE 200809L
 
 #include "builtin.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "exec.h"
+#include "jobs.h"
 
 #include "../alloc/alloc.h"
 #include "../alloc/heap_builtin.h"
@@ -150,13 +154,16 @@ static int bi_help(Shell *sh, int argc, char **argv) {
     (void)argc;
     (void)argv;
     fputs("nullsh builtins:\n"
+          "  bg [%N]          resume a stopped job in the background\n"
           "  cd [dir]         change directory, no argument means $HOME,\n"
           "                   a single - means $OLDPWD\n"
           "  exit [status]    leave the shell, default is the last status\n"
           "  export NAME=VAL  set a variable for the shell and its children\n"
+          "  fg [%N]          bring a job to the foreground and wait for it\n"
           "  heap [args]      allocator stats, strategy [NAME], or dump\n"
           "  help             print this list\n"
           "  history          print the command history, oldest first\n"
+          "  jobs             list the background and stopped jobs\n"
           "  unset NAME       remove a variable from the environment\n",
           stdout);
     return 0;
@@ -228,15 +235,119 @@ static int bi_history(Shell *sh, int argc, char **argv) {
     return 0;
 }
 
+// jobs.h looks a job up by id, never by index, and next_id reuses the lowest
+// free number, so listing walks ids until every live job has been seen.
+#define JOB_ID_SCAN 4096
+
+static const char *state_word(JobState s) {
+    switch (s) {
+    case JOB_RUNNING:
+        return "Running";
+    case JOB_STOPPED:
+        return "Stopped";
+    default:
+        return "Done";
+    }
+}
+
+// NULL with a message printed. A NULL arg asks for the current job.
+static Job *job_from_arg(const char *name, const char *arg) {
+    if (arg == NULL) {
+        Job *j = jobs_current();
+        if (j == NULL) {
+            bi_err(name, "no current job");
+        }
+        return j;
+    }
+    // %N and a bare N name the same job, which is what every shell accepts.
+    const char *digits = (arg[0] == '%') ? arg + 1 : arg;
+    char *end = NULL;
+    long id = strtol(digits, &end, 10);
+    Job *j = NULL;
+    if (end != digits && *end == '\0' && id > 0 && id <= JOB_ID_SCAN) {
+        j = jobs_by_id((int)id);
+    }
+    if (j == NULL) {
+        bi_err_arg(name, arg, "no such job");
+    }
+    return j;
+}
+
+static int bi_jobs(Shell *sh, int argc, char **argv) {
+    (void)sh;
+    (void)argv;
+    if (argc > 1) {
+        bi_err("jobs", "too many arguments");
+        return 1;
+    }
+    size_t total = jobs_count();
+    size_t seen = 0;
+    for (int id = 1; id <= JOB_ID_SCAN && seen < total; id++) {
+        const Job *j = jobs_by_id(id);
+        if (j == NULL) {
+            continue;
+        }
+        seen++;
+        printf("[%d]  %s  %s\n", j->id, state_word(j->state), j->cmdline);
+    }
+    return 0;
+}
+
+static int bi_fg(Shell *sh, int argc, char **argv) {
+    if (argc > 2) {
+        bi_err("fg", "too many arguments");
+        return 1;
+    }
+    Job *j = job_from_arg("fg", (argc > 1) ? argv[1] : NULL);
+    if (j == NULL) {
+        return 1;
+    }
+    // ESRCH just means the group already finished, which fg then reports.
+    if (kill(-j->pgid, SIGCONT) != 0 && errno != ESRCH) {
+        bi_err("fg", strerror(errno));
+        return 1;
+    }
+    j->state = JOB_RUNNING;
+    printf("%s\n", j->cmdline);
+    fflush(stdout);
+    return exec_wait_foreground(sh, j);
+}
+
+static int bi_bg(Shell *sh, int argc, char **argv) {
+    (void)sh;
+    if (argc > 2) {
+        bi_err("bg", "too many arguments");
+        return 1;
+    }
+    Job *j = job_from_arg("bg", (argc > 1) ? argv[1] : NULL);
+    if (j == NULL) {
+        return 1;
+    }
+    if (j->state != JOB_STOPPED) {
+        bi_err("bg", "job is already running");
+        return 1;
+    }
+    if (kill(-j->pgid, SIGCONT) != 0) {
+        bi_err("bg", strerror(errno));
+        return 1;
+    }
+    j->state = JOB_RUNNING;
+    size_t len = strlen(j->cmdline);
+    const char *tail = (len > 0 && j->cmdline[len - 1] == '&') ? "" : " &";
+    printf("[%d]  %s%s\n", j->id, j->cmdline, tail);
+    return 0;
+}
+
 typedef struct {
     const char *name;
     BuiltinFn fn;
 } BuiltinEntry;
 
 static const BuiltinEntry BUILTINS[] = {
-    {"cd", bi_cd},          {"exit", bi_exit}, {"export", bi_export},
-    {"heap", heap_builtin}, {"help", bi_help}, {"history", bi_history},
-    {"unset", bi_unset},
+    {"bg", bi_bg},          {"cd", bi_cd},     {"exit", bi_exit},
+    {"export", bi_export},  {"fg", bi_fg},     {"heap", heap_builtin},
+    {"help", bi_help},      {"history", bi_history},
+    {"jobs", bi_jobs},      {"unset", bi_unset},
 };
 
 BuiltinFn builtin_lookup(const char *name) {

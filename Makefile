@@ -26,6 +26,8 @@ CORE_TEST_OBJS := $(BUILD)/debug/src/alloc/alloc.o $(BUILD)/debug/src/alloc/firs
                   $(BUILD)/debug/src/shell/lexer.o $(BUILD)/debug/src/shell/expand.o \
                   $(BUILD)/debug/src/shell/history.o $(BUILD)/debug/src/shell/parser.o \
                   $(BUILD)/debug/src/shell/builtin.o $(BUILD)/debug/src/shell/redirect.o \
+                  $(BUILD)/debug/src/shell/jobs.o $(BUILD)/debug/src/shell/signals.o \
+                  $(BUILD)/debug/src/shell/spawn.o $(BUILD)/debug/src/shell/exec.o \
                   $(BUILD)/debug/src/alloc/heap_builtin.o
 
 UNIT_TEST_SRCS := $(shell find src -name '*_test.c')

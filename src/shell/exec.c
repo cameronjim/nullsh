@@ -10,12 +10,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include "builtin.h"
 #include "expand.h"
+#include "jobs.h"
 #include "redirect.h"
+#include "signals.h"
+#include "spawn.h"
 
 #include "../alloc/alloc.h"
 #include "../util/str.h"
@@ -140,24 +142,6 @@ static void exec_argv(char **argv) {
     exec_search_path(argv);
 }
 
-// waitpid is retried on EINTR so a signal never abandons the child.
-static int wait_for_child(pid_t pid) {
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) {
-            fprintf(stderr, "nullsh: waitpid: %s\n", strerror(errno));
-            return 1;
-        }
-    }
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
-    }
-    if (WIFSIGNALED(status)) {
-        return 128 + WTERMSIG(status);
-    }
-    return 1;
-}
-
 static bool has_redirect(const Command *c) {
     return c->redir_in != NULL || c->redir_out != NULL || c->redir_err != NULL;
 }
@@ -178,25 +162,6 @@ static void die_redirect(NshError err) {
     _exit(status);
 }
 
-static int run_external(const Command *c, int last_status, char **argv) {
-    // Flush first, or the child inherits the buffers and reprints them.
-    fflush(NULL);
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        fprintf(stderr, "nullsh: fork: %s\n", strerror(errno));
-        return 1;
-    }
-    if (pid == 0) {
-        NshError err = redirect_apply(c, last_status, NULL);
-        if (err != NSH_OK) {
-            die_redirect(err);
-        }
-        exec_argv(argv);
-    }
-    return wait_for_child(pid);
-}
-
 // A builtin runs in the shell, so its redirects move the shell's own fds.
 static int run_builtin(Shell *sh, const Command *c, BuiltinFn fn, int argc,
                        char **argv) {
@@ -207,31 +172,6 @@ static int run_builtin(Shell *sh, const Command *c, BuiltinFn fn, int argc,
     NshError err = redirect_apply(c, sh->last_status, &save);
     int status = (err == NSH_OK) ? fn(sh, argc, argv) : redirect_status(err);
     redirect_restore(&save);
-    return status;
-}
-
-static int run_simple(Shell *sh, const Command *c) {
-    char **argv = NULL;
-    int argc = 0;
-    if (build_argv(c, sh->last_status, &argv, &argc) != NSH_OK) {
-        fprintf(stderr, "nullsh: bad substitution\n");
-        return STATUS_BAD_SUBST;
-    }
-    if (argc == 0) {
-        argv_free(argv, argc);
-        return sh->last_status;
-    }
-    if (argv[0][0] == '\0') {
-        // Every word expanded away, so there is no name to look up.
-        fprintf(stderr, "nullsh: : command not found\n");
-        argv_free(argv, argc);
-        return STATUS_NOT_FOUND;
-    }
-
-    BuiltinFn fn = builtin_lookup(argv[0]);
-    int status = (fn != NULL) ? run_builtin(sh, c, fn, argc, argv)
-                              : run_external(c, sh->last_status, argv);
-    argv_free(argv, argc);
     return status;
 }
 
@@ -286,7 +226,111 @@ static void run_stage(Shell *sh, const Command *c, int in_fd, int out_fd,
     exec_argv(argv);
 }
 
-static int run_pipeline(Shell *sh, const Pipeline *pl) {
+// The job table's label. Rebuilt from the expanded words, so quoting and the
+// original spacing are lost; only enough to recognise the job is promised.
+static char *pipeline_cmdline(const Shell *sh, const Pipeline *pl) {
+    Str s;
+    str_init(&s);
+    for (size_t i = 0; i < pl->cmds.len; i++) {
+        if (i > 0) {
+            str_append(&s, " | ");
+        }
+        const Command *c = vec_get(&pl->cmds, i);
+        for (size_t k = 0; k < c->words.len; k++) {
+            if (k > 0) {
+                str_push(&s, ' ');
+            }
+            char *text = NULL;
+            if (expand_word(vec_get(&c->words, k), sh->last_status, &text) !=
+                NSH_OK) {
+                continue;
+            }
+            str_append(&s, text);
+            nsh_free(text);
+        }
+    }
+    if (pl->background) {
+        str_append(&s, " &");
+    }
+    char *out = str_take(&s);
+    str_free(&s);
+    return out;
+}
+
+static void announce_stopped(const Job *j) {
+    fprintf(stderr, "[%d]  Stopped  %s\n", j->id, j->cmdline);
+    fflush(stderr);
+}
+
+// The terminal goes to the job and always comes back, stopped or finished.
+static int foreground_wait(Shell *sh, const Pipeline *pl, pid_t pgid,
+                           const pid_t *pids, size_t n) {
+    spawn_set_terminal(sh, pgid);
+    bool stopped = false;
+    int status = spawn_wait_pids(pids, n, &stopped);
+    spawn_set_terminal(sh, sh->shell_pgid);
+    if (stopped) {
+        char *cmdline = pipeline_cmdline(sh, pl);
+        Job *j = jobs_add(pgid, pids, n, cmdline);
+        nsh_free(cmdline);
+        j->state = JOB_STOPPED;
+        announce_stopped(j);
+    }
+    return status;
+}
+
+int exec_wait_foreground(Shell *sh, Job *job) {
+    if (sh == NULL || job == NULL) {
+        return 1;
+    }
+    spawn_set_terminal(sh, job->pgid);
+    bool stopped = false;
+    int status = spawn_wait_pids(job->pids, job->nproc, &stopped);
+    spawn_set_terminal(sh, sh->shell_pgid);
+    if (stopped) {
+        job->state = JOB_STOPPED;
+        announce_stopped(job);
+        return status;
+    }
+    // jobs.h has no silent removal, so the next prompt's reap prints the Done.
+    job->nleft = 0;
+    job->state = JOB_DONE;
+    return status;
+}
+
+// Every stage lands in one new group whose pgid is the first stage's pid.
+static size_t fork_stages(Shell *sh, const Pipeline *pl, pid_t *pids,
+                          pid_t *pgid, int *fds, size_t nfds) {
+    size_t n = pl->cmds.len;
+    size_t forked = 0;
+    for (size_t i = 0; i < n; i++) {
+        const Command *c = vec_get(&pl->cmds, i);
+        // Flush first, or the child inherits the buffers and reprints them.
+        fflush(NULL);
+        pid_t pid = fork();
+        if (pid < 0) {
+            fprintf(stderr, "nullsh: fork: %s\n", strerror(errno));
+            break;
+        }
+        if (pid == 0) {
+            spawn_join_group(0, (*pgid == 0) ? getpid() : *pgid);
+            signals_reset_child();
+            int in_fd = (i == 0) ? -1 : fds[(i - 1) * 2];
+            int out_fd = (i + 1 == n) ? -1 : fds[i * 2 + 1];
+            run_stage(sh, c, in_fd, out_fd, fds, nfds);
+            _exit(STATUS_NOT_EXEC);
+        }
+        if (*pgid == 0) {
+            *pgid = pid;
+        }
+        spawn_join_group(pid, *pgid);
+        pids[forked++] = pid;
+    }
+    return forked;
+}
+
+// Forks every stage, then either waits for the group or files it as a job.
+static int run_forked(Shell *sh, const Pipeline *pl) {
     size_t n = pl->cmds.len;
     size_t nfds = (n - 1) * 2;
     int *fds = nsh_calloc(nfds, sizeof(*fds));
@@ -303,36 +347,56 @@ static int run_pipeline(Shell *sh, const Pipeline *pl) {
     }
 
     pid_t *pids = nsh_calloc(n, sizeof(*pids));
-    size_t forked = 0;
-    for (size_t i = 0; i < n; i++) {
-        const Command *c = vec_get(&pl->cmds, i);
-        fflush(NULL);
-        pid_t pid = fork();
-        if (pid < 0) {
-            fprintf(stderr, "nullsh: fork: %s\n", strerror(errno));
-            break;
-        }
-        if (pid == 0) {
-            int in_fd = (i == 0) ? -1 : fds[(i - 1) * 2];
-            int out_fd = (i + 1 == n) ? -1 : fds[i * 2 + 1];
-            run_stage(sh, c, in_fd, out_fd, fds, nfds);
-            _exit(STATUS_NOT_EXEC);
-        }
-        pids[forked++] = pid;
-    }
-
+    pid_t pgid = 0;
+    size_t forked = fork_stages(sh, pl, pids, &pgid, fds, nfds);
     close_fds(fds, nfds);
     nsh_free(fds);
 
-    // The last stage owns $?; a stage that never forked leaves 1 behind.
+    // A pipeline that never forked a single stage leaves 1 behind.
     int status = 1;
-    for (size_t i = 0; i < forked; i++) {
-        int reaped = wait_for_child(pids[i]);
-        if (i + 1 == n) {
-            status = reaped;
-        }
+    if (forked > 0 && pl->background) {
+        char *cmdline = pipeline_cmdline(sh, pl);
+        Job *j = jobs_add(pgid, pids, forked, cmdline);
+        nsh_free(cmdline);
+        fprintf(stderr, "[%d] %ld\n", j->id, (long)j->pgid);
+        fflush(stderr);
+        status = 0;
+    } else if (forked > 0) {
+        status = foreground_wait(sh, pl, pgid, pids, forked);
     }
     nsh_free(pids);
+    return status;
+}
+
+// One command with no &: a builtin runs in the shell, anything else forks.
+static int run_simple(Shell *sh, const Pipeline *pl) {
+    const Command *c = vec_get(&pl->cmds, 0);
+    char **argv = NULL;
+    int argc = 0;
+    if (build_argv(c, sh->last_status, &argv, &argc) != NSH_OK) {
+        fprintf(stderr, "nullsh: bad substitution\n");
+        return STATUS_BAD_SUBST;
+    }
+    if (argc == 0) {
+        argv_free(argv, argc);
+        return sh->last_status;
+    }
+    if (argv[0][0] == '\0') {
+        // Every word expanded away, so there is no name to look up.
+        fprintf(stderr, "nullsh: : command not found\n");
+        argv_free(argv, argc);
+        return STATUS_NOT_FOUND;
+    }
+
+    BuiltinFn fn = builtin_lookup(argv[0]);
+    int status;
+    if (fn != NULL) {
+        status = run_builtin(sh, c, fn, argc, argv);
+    } else {
+        // The child expands again; expansion is pure, so the words match.
+        status = run_forked(sh, pl);
+    }
+    argv_free(argv, argc);
     return status;
 }
 
@@ -343,16 +407,11 @@ NshError exec_pipeline(Shell *sh, Pipeline *pl) {
     if (pl->cmds.len == 0) {
         return NSH_OK;
     }
-    if (pl->background) {
-        fprintf(stderr, "nullsh: job control arrives in phase 4\n");
-        sh->last_status = 1;
-        return NSH_OK;
-    }
 
-    if (pl->cmds.len == 1) {
-        sh->last_status = run_simple(sh, vec_get(&pl->cmds, 0));
+    if (pl->cmds.len == 1 && !pl->background) {
+        sh->last_status = run_simple(sh, pl);
     } else {
-        sh->last_status = run_pipeline(sh, pl);
+        sh->last_status = run_forked(sh, pl);
     }
     return NSH_OK;
 }
