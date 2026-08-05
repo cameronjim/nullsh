@@ -35,7 +35,9 @@ CORE_TEST_OBJS := $(BUILD)/debug/src/alloc/alloc.o $(BUILD)/debug/src/alloc/firs
                   $(BUILD)/debug/src/emu/emu.o $(BUILD)/debug/src/netmon/decode.o \
                   $(BUILD)/debug/src/netmon/print.o $(BUILD)/debug/src/netmon/filter.o \
                   $(BUILD)/debug/src/netmon/capture.o $(BUILD)/debug/src/netmon/netmon.o \
-                  $(BUILD)/debug/src/shell/edit.o
+                  $(BUILD)/debug/src/shell/edit.o $(BUILD)/debug/src/shell/ast.o \
+                  $(BUILD)/debug/src/shell/eval.o $(BUILD)/debug/src/shell/func.o \
+                  $(BUILD)/debug/src/shell/run.o
 
 UNIT_TEST_SRCS := $(shell find src -name '*_test.c')
 SELF_TEST_SRCS := $(sort $(wildcard tests/*.c))

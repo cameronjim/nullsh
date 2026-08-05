@@ -99,7 +99,8 @@ static void reap_jobs(void) {
 }
 
 int main(void) {
-    Shell sh = {{NULL, 0, 0, 0}, 0, false, 0, false, -1, 0};
+    Shell sh = {0};
+    sh.tty_fd = -1;
     jobs_init();
     shell_setup(&sh);
     history_init(&sh.history, HISTORY_CAP);

@@ -6,6 +6,8 @@ typedef enum {
     NSH_OK = 0,
     NSH_ERR_ALLOC,
     NSH_ERR_SYNTAX,
+    // Input ended mid-construct: not wrong, unfinished. Drives the PS2 prompt.
+    NSH_ERR_INCOMPLETE,
     NSH_ERR_IO,
     NSH_ERR_NOT_FOUND,
     NSH_ERR_INVALID,

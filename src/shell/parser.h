@@ -1,4 +1,4 @@
-// Parser: a TokenList in, one Pipeline out.
+// Parser: a TokenList in, an AST out, plus the legacy single-pipeline entry.
 
 #pragma once
 
@@ -22,6 +22,13 @@ typedef struct {
     bool background;     // trailing &
 } Pipeline;
 
-// Consumes tl and overwrites out; both are left valid on every path.
+typedef struct Node Node;
+
+// Consumes tl and writes the tree through out; *out is NULL for an empty
+// program. NSH_ERR_INCOMPLETE means the input ended mid-construct and the
+// caller should gather more lines. tl is left valid and empty on every path.
+NshError parser_parse_program(TokenList *tl, Node **out);
+
+// Legacy: accepts exactly one plain pipeline, kept for existing callers.
 NshError parser_parse(TokenList *tl, Pipeline *out);
 void pipeline_free(Pipeline *p);  // safe on a zeroed or already-freed pipeline

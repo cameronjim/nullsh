@@ -57,3 +57,22 @@ int signals_chld_take(void) {
     g_chld_flag = 0;
     return fired;
 }
+
+static volatile sig_atomic_t g_int_flag;
+
+static void int_handler(int sig) {
+    (void)sig;
+    g_int_flag = 1;
+}
+
+void signals_int_watch(int on) {
+    g_int_flag = 0;
+    // SA_RESTART so a Ctrl-C aimed at a loop never breaks a waitpid mid-wait.
+    set_disposition(SIGINT, on ? int_handler : SIG_IGN, SA_RESTART);
+}
+
+int signals_int_take(void) {
+    int fired = g_int_flag != 0;
+    g_int_flag = 0;
+    return fired;
+}

@@ -10,6 +10,8 @@ const char *nsh_error_str(NshError e) {
         return "out of memory";
     case NSH_ERR_SYNTAX:
         return "syntax error";
+    case NSH_ERR_INCOMPLETE:
+        return "unexpected end of input";
     case NSH_ERR_IO:
         return "i/o error";
     case NSH_ERR_NOT_FOUND:
