@@ -40,13 +40,28 @@ static void word_free(Token *t) {
     vec_free(&t->segs);
 }
 
+// No status and no positionals, which is what most cases here want.
+static const ExpandCtx g_none = {0, 0, NULL};
+
 // The common shape: one segment in, code and result out.
 static NshError expand_one(const char *text, bool expand, int last_status,
                            char **out) {
+    ExpandCtx ctx = {last_status, 0, NULL};
     Token t;
     word_init(&t);
     word_push(&t, text, expand);
-    NshError err = expand_word(&t, last_status, out);
+    NshError err = expand_word(&t, &ctx, out);
+    word_free(&t);
+    return err;
+}
+
+// The same shape with positionals, for the $0..$9 and $# cases.
+static NshError expand_ctx_one(const char *text, bool expand,
+                               const ExpandCtx *ctx, char **out) {
+    Token t;
+    word_init(&t);
+    word_push(&t, text, expand);
+    NshError err = expand_word(&t, ctx, out);
     word_free(&t);
     return err;
 }
@@ -69,7 +84,7 @@ TEST(word_with_no_segments_gives_empty_string) {
     Token t;
     word_init(&t);
     char *out = NULL;
-    ASSERT_EQ(expand_word(&t, 0, &out), NSH_OK);
+    ASSERT_EQ(expand_word(&t, &g_none, &out), NSH_OK);
     ASSERT_STR_EQ(out, "");
     nsh_free(out);
     word_free(&t);
@@ -232,17 +247,21 @@ TEST(lone_dollar_is_literal) {
     nsh_free(out);
 }
 
-// Positional parameters are not supported, so $5 is literal text.
-TEST(dollar_digit_is_literal) {
+// A digit is a positional now, and with none set it expands to nothing.
+TEST(dollar_digit_without_positionals_is_empty) {
     char *out = NULL;
     ASSERT_EQ(expand_one("$5", true, 0, &out), NSH_OK);
-    ASSERT_STR_EQ(out, "$5");
+    ASSERT_STR_EQ(out, "");
     nsh_free(out);
     ASSERT_EQ(expand_one("$0 $1 $9", true, 0, &out), NSH_OK);
-    ASSERT_STR_EQ(out, "$0 $1 $9");
+    ASSERT_STR_EQ(out, "  ");
+    nsh_free(out);
+    ASSERT_EQ(expand_one("cost: $9.99", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "cost: .99");
     nsh_free(out);
 }
 
+// $@ and $* are deliberate omissions, so they stay text like $- and $!.
 TEST(dollar_punctuation_is_literal) {
     char *out = NULL;
     ASSERT_EQ(expand_one("$-", true, 0, &out), NSH_OK);
@@ -251,8 +270,8 @@ TEST(dollar_punctuation_is_literal) {
     ASSERT_EQ(expand_one("$ x", true, 0, &out), NSH_OK);
     ASSERT_STR_EQ(out, "$ x");
     nsh_free(out);
-    ASSERT_EQ(expand_one("cost: $9.99, $@ and $!", true, 0, &out), NSH_OK);
-    ASSERT_STR_EQ(out, "cost: $9.99, $@ and $!");
+    ASSERT_EQ(expand_one("$@ and $* and $!", true, 0, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "$@ and $* and $!");
     nsh_free(out);
 }
 
@@ -327,7 +346,7 @@ TEST(brace_form_may_not_span_segments) {
     word_push(&t, "${NSH_TEST", true);
     word_push(&t, "_A}", true);
     char *out = NULL;
-    ASSERT_EQ(expand_word(&t, 0, &out), NSH_ERR_SYNTAX);
+    ASSERT_EQ(expand_word(&t, &g_none, &out), NSH_ERR_SYNTAX);
     ASSERT_TRUE(out == NULL);
     word_free(&t);
     unsetenv("NSH_TEST_A");
@@ -338,17 +357,17 @@ TEST(non_word_token_is_invalid) {
     Token t;
     t.kind = TOK_PIPE;
     vec_init(&t.segs);
-    ASSERT_EQ(expand_word(&t, 0, &out), NSH_ERR_INVALID);
+    ASSERT_EQ(expand_word(&t, &g_none, &out), NSH_ERR_INVALID);
     ASSERT_TRUE(out == NULL);
     vec_free(&t.segs);
 
     t.kind = TOK_REDIR_OUT;
     vec_init(&t.segs);
-    ASSERT_EQ(expand_word(&t, 0, &out), NSH_ERR_INVALID);
+    ASSERT_EQ(expand_word(&t, &g_none, &out), NSH_ERR_INVALID);
     ASSERT_TRUE(out == NULL);
     vec_free(&t.segs);
 
-    ASSERT_EQ(expand_word(NULL, 0, &out), NSH_ERR_INVALID);
+    ASSERT_EQ(expand_word(NULL, &g_none, &out), NSH_ERR_INVALID);
     ASSERT_TRUE(out == NULL);
 }
 
@@ -367,8 +386,10 @@ TEST(multi_segment_word_mixes_every_rule) {
     word_push(&t, "", true);
     word_push(&t, "end", false);
     char *out = NULL;
-    ASSERT_EQ(expand_word(&t, 12, &out), NSH_OK);
-    ASSERT_STR_EQ(out, "one two|$NSH_TEST_A|B||12 $5 $|end");
+    char *args[] = {"prog", "1", "2", "3", "4", "five", NULL};
+    ExpandCtx ctx = {12, 6, args};
+    ASSERT_EQ(expand_word(&t, &ctx, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "one two|$NSH_TEST_A|B||12 five $|end");
     nsh_free(out);
     word_free(&t);
     unsetenv("NSH_TEST_A");
@@ -507,7 +528,7 @@ TEST(tilde_only_expands_on_the_words_first_segment) {
     word_push(&t, "a", true);
     word_push(&t, "~/x", true);
     char *out = NULL;
-    ASSERT_EQ(expand_word(&t, 0, &out), NSH_OK);
+    ASSERT_EQ(expand_word(&t, &g_none, &out), NSH_OK);
     ASSERT_STR_EQ(out, "a~/x");
     nsh_free(out);
     word_free(&t);
@@ -515,7 +536,7 @@ TEST(tilde_only_expands_on_the_words_first_segment) {
     word_init(&t);
     word_push(&t, "~", true);
     word_push(&t, "x", false);
-    ASSERT_EQ(expand_word(&t, 0, &out), NSH_OK);
+    ASSERT_EQ(expand_word(&t, &g_none, &out), NSH_OK);
     ASSERT_STR_EQ(out, "~x");
     nsh_free(out);
     word_free(&t);
@@ -524,7 +545,7 @@ TEST(tilde_only_expands_on_the_words_first_segment) {
     word_init(&t);
     word_push(&t, "~/", true);
     word_push(&t, "x y", false);
-    ASSERT_EQ(expand_word(&t, 0, &out), NSH_OK);
+    ASSERT_EQ(expand_word(&t, &g_none, &out), NSH_OK);
     ASSERT_STR_EQ(out, "/home/tester/x y");
     nsh_free(out);
     word_free(&t);
@@ -546,11 +567,139 @@ TEST(tilde_and_variables_coexist_in_one_segment) {
     unsetenv("NSH_TEST_A");
 }
 
+// Positional parameters
+
+// $0 is the script or function name, so $1 is argv[1] and $# excludes it.
+TEST(positionals_expand_by_index) {
+    char *args[] = {"prog", "one", "two", "three", NULL};
+    ExpandCtx ctx = {0, 4, args};
+    static const struct {
+        const char *in;
+        const char *want;
+    } cases[] = {
+        {"$0", "prog"},        {"$1", "one"},
+        {"$2", "two"},         {"$3", "three"},
+        {"$4", ""},            {"$5", ""},
+        {"$9", ""},            {"${0}", "prog"},
+        {"${1}", "one"},       {"${3}", "three"},
+        {"${4}", ""},          {"${9}", ""},
+        {"$1$2$3", "onetwothree"},
+        {"[$1]", "[one]"},     {"a$2b", "atwob"},
+        {"$#", "3"},           {"count=$#", "count=3"},
+        {"$#$#", "33"},        {"$1 $# $0", "one 3 prog"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char *out = NULL;
+        ASSERT_EQ(expand_ctx_one(cases[i].in, true, &ctx, &out), NSH_OK);
+        ASSERT_STR_EQ(out, cases[i].want);
+        nsh_free(out);
+    }
+}
+
+// One digit only, so the 0 in $10 is text that follows $1.
+TEST(only_one_digit_belongs_to_a_positional) {
+    char *args[] = {"prog", "one", NULL};
+    ExpandCtx ctx = {0, 2, args};
+    char *out = NULL;
+    ASSERT_EQ(expand_ctx_one("$10", true, &ctx, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "one0");
+    nsh_free(out);
+    ASSERT_EQ(expand_ctx_one("$123", true, &ctx, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "one23");
+    nsh_free(out);
+    // The brace form is one digit too, so ${10} is not a name and not valid.
+    ASSERT_EQ(expand_ctx_one("${10}", true, &ctx, &out), NSH_ERR_SYNTAX);
+    ASSERT_TRUE(out == NULL);
+}
+
+TEST(positional_count_tracks_argc) {
+    char *args[] = {"prog", "a", "b", "c", "d", "e", "f", "g", "h", "i", NULL};
+    static const int argcs[] = {1, 2, 5, 10};
+    static const char *wants[] = {"0", "1", "4", "9"};
+    for (size_t i = 0; i < sizeof argcs / sizeof argcs[0]; i++) {
+        ExpandCtx ctx = {0, argcs[i], args};
+        char *out = NULL;
+        ASSERT_EQ(expand_ctx_one("$#", true, &ctx, &out), NSH_OK);
+        ASSERT_STR_EQ(out, wants[i]);
+        nsh_free(out);
+    }
+}
+
+// A shell with no script and no function call has nothing to hand out.
+TEST(no_positionals_gives_empty_strings_and_a_zero_count) {
+    char *args[] = {"prog", "one", NULL};
+    ExpandCtx empty_argc = {0, 0, args};
+    ExpandCtx null_argv = {0, 3, NULL};
+    ExpandCtx both = {0, 0, NULL};
+    const ExpandCtx *ctxs[] = {&empty_argc, &null_argv, &both, NULL};
+    for (size_t i = 0; i < sizeof ctxs / sizeof ctxs[0]; i++) {
+        char *out = NULL;
+        ASSERT_EQ(expand_ctx_one("<$0|$1|$9|${2}>", true, ctxs[i], &out),
+                  NSH_OK);
+        ASSERT_STR_EQ(out, "<|||>");
+        nsh_free(out);
+        ASSERT_EQ(expand_ctx_one("$#", true, ctxs[i], &out), NSH_OK);
+        ASSERT_STR_EQ(out, "0");
+        nsh_free(out);
+    }
+}
+
+// Double quotes are an expandable segment, single quotes are not.
+TEST(positionals_follow_the_quoting_rules) {
+    char *args[] = {"prog", "a b", NULL};
+    ExpandCtx ctx = {0, 2, args};
+    char *out = NULL;
+    // The lexer hands a double quoted run over as one expandable segment.
+    ASSERT_EQ(expand_ctx_one("x $1 y", true, &ctx, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "x a b y");
+    nsh_free(out);
+    ASSERT_EQ(expand_ctx_one("$1 $#", false, &ctx, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "$1 $#");
+    nsh_free(out);
+}
+
+TEST(positionals_mix_with_status_and_variables) {
+    setenv("NSH_TEST_A", "env", 1);
+    char *args[] = {"prog", "one", NULL};
+    ExpandCtx ctx = {7, 2, args};
+    char *out = NULL;
+    ASSERT_EQ(expand_ctx_one("$NSH_TEST_A-$1-$?-$#", true, &ctx, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "env-one-7-1");
+    nsh_free(out);
+    ASSERT_EQ(expand_ctx_one("${NSH_TEST_A}${1}$?", true, &ctx, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "envone7");
+    nsh_free(out);
+    unsetenv("NSH_TEST_A");
+}
+
+// A positional holding a dollar sign is data, exactly like a variable's value.
+TEST(positional_values_are_not_rescanned) {
+    char *args[] = {"prog", "$NSH_TEST_A ${x} $?", NULL};
+    ExpandCtx ctx = {5, 2, args};
+    setenv("NSH_TEST_A", "no", 1);
+    char *out = NULL;
+    ASSERT_EQ(expand_ctx_one("$1", true, &ctx, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "$NSH_TEST_A ${x} $?");
+    nsh_free(out);
+    unsetenv("NSH_TEST_A");
+}
+
+// A tilde still wins the first character, and $0 after it is still a value.
+TEST(positionals_coexist_with_a_leading_tilde) {
+    setenv("HOME", "/home/tester", 1);
+    char *args[] = {"prog", "sub", NULL};
+    ExpandCtx ctx = {0, 2, args};
+    char *out = NULL;
+    ASSERT_EQ(expand_ctx_one("~/$1/end", true, &ctx, &out), NSH_OK);
+    ASSERT_STR_EQ(out, "/home/tester/sub/end");
+    nsh_free(out);
+}
+
 TEST(null_out_pointer_is_rejected) {
     Token t;
     word_init(&t);
     word_push(&t, "x", true);
-    ASSERT_EQ(expand_word(&t, 0, NULL), NSH_ERR_INVALID);
+    ASSERT_EQ(expand_word(&t, &g_none, NULL), NSH_ERR_INVALID);
     word_free(&t);
 }
 

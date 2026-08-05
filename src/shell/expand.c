@@ -14,12 +14,19 @@
 // A sign plus the digits of an int fit well under this.
 #define STATUS_BUF 24
 
+// What a caller that passed no context gets.
+static const ExpandCtx CTX_EMPTY = {0, 0, NULL};
+
 static bool is_name_start(char c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
 }
 
+static bool is_digit(char c) {
+    return c >= '0' && c <= '9';
+}
+
 static bool is_name_char(char c) {
-    return is_name_start(c) || (c >= '0' && c <= '9');
+    return is_name_start(c) || is_digit(c);
 }
 
 // getenv needs a NUL terminated key, and the name here is only a slice.
@@ -32,6 +39,30 @@ static void append_env(Str *out, const char *p, size_t len) {
     if (val != NULL) {
         str_append(out, val);
     }
+}
+
+// $? and $# both come out as plain decimal.
+static void append_int(Str *out, int value) {
+    char buf[STATUS_BUF];
+    snprintf(buf, sizeof(buf), "%d", value);
+    str_append(out, buf);
+}
+
+// $0 is argv[0], so index n is in range only while it stays under argc.
+static void append_positional(Str *out, const ExpandCtx *ctx, int n) {
+    if (ctx->argv == NULL || ctx->argc <= n) {
+        return;
+    }
+    const char *val = ctx->argv[n];
+    if (val != NULL) {
+        str_append(out, val);
+    }
+}
+
+// $# counts the arguments after $0, so it is one less than argc.
+static void append_count(Str *out, const ExpandCtx *ctx) {
+    int n = (ctx->argv == NULL || ctx->argc < 1) ? 0 : ctx->argc - 1;
+    append_int(out, n);
 }
 
 // Length of the longest name starting at p, zero when p starts no name.
@@ -64,7 +95,8 @@ static size_t expand_tilde(const char *text, bool word_end, Str *out) {
     return 1;
 }
 
-static NshError expand_segment(const char *text, int last_status, Str *out) {
+static NshError expand_segment(const char *text, const ExpandCtx *ctx,
+                               Str *out) {
     size_t i = 0;
     while (text[i] != '\0') {
         if (text[i] != '$') {
@@ -75,10 +107,19 @@ static NshError expand_segment(const char *text, int last_status, Str *out) {
 
         char next = text[i + 1];
         if (next == '?') {
-            char buf[STATUS_BUF];
-            snprintf(buf, sizeof(buf), "%d", last_status);
-            str_append(out, buf);
+            append_int(out, ctx->last_status);
             i += 2;
+        } else if (next == '#') {
+            append_count(out, ctx);
+            i += 2;
+        } else if (is_digit(next)) {
+            // One digit only, so $10 is $1 followed by a literal 0.
+            append_positional(out, ctx, next - '0');
+            i += 2;
+        } else if (next == '{' && is_digit(text[i + 2]) &&
+                   text[i + 3] == '}') {
+            append_positional(out, ctx, text[i + 2] - '0');
+            i += 4;
         } else if (next == '{') {
             size_t n = name_len(text + i + 2);
             // A brace form never continues into the next segment.
@@ -90,7 +131,7 @@ static NshError expand_segment(const char *text, int last_status, Str *out) {
         } else {
             size_t n = name_len(text + i + 1);
             if (n == 0) {
-                // $5, $-, a lone $ at the end: the dollar is ordinary text.
+                // $-, a lone $ at the end: the dollar is ordinary text.
                 str_push(out, '$');
                 i++;
             } else {
@@ -102,13 +143,16 @@ static NshError expand_segment(const char *text, int last_status, Str *out) {
     return NSH_OK;
 }
 
-NshError expand_word(const Token *tok, int last_status, char **out) {
+NshError expand_word(const Token *tok, const ExpandCtx *ctx, char **out) {
     if (out == NULL) {
         return NSH_ERR_INVALID;
     }
     *out = NULL;
     if (tok == NULL || tok->kind != TOK_WORD) {
         return NSH_ERR_INVALID;
+    }
+    if (ctx == NULL) {
+        ctx = &CTX_EMPTY;
     }
 
     Str acc;
@@ -123,7 +167,7 @@ NshError expand_word(const Token *tok, int last_status, char **out) {
             size_t skip = (i == 0) ? expand_tilde(seg->text, tok->segs.len == 1,
                                                   &acc)
                                    : 0;
-            NshError err = expand_segment(seg->text + skip, last_status, &acc);
+            NshError err = expand_segment(seg->text + skip, ctx, &acc);
             if (err != NSH_OK) {
                 str_free(&acc);
                 return err;
