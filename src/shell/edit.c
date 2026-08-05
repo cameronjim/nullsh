@@ -385,8 +385,9 @@ static bool apply_key(EditKey key, char ch, EditLine *e, Recall *r,
         return true;
     case EK_INTERRUPT:
         // Bash-like: abandon the line, show a fresh prompt, run nothing.
+        // NSH_INTERRUPT keeps Ctrl-C distinct from a bare Enter for run.c.
         edit_set(e, NULL);
-        *err = NSH_OK;
+        *err = NSH_INTERRUPT;
         return true;
     case EK_EOF:
         if (e->buf.len == 0) {

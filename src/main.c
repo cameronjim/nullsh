@@ -1,32 +1,34 @@
-// nullsh entry point: prompt, read, lex, parse, execute, and the history file.
+// nullsh entry point: startup, the history file, and the choice of driver.
 
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include "alloc/alloc.h"
-#include "shell/edit.h"
-#include "shell/exec.h"
+#include "shell/func.h"
 #include "shell/jobs.h"
-#include "shell/lexer.h"
-#include "shell/parser.h"
+#include "shell/run.h"
 #include "shell/shell.h"
 #include "shell/signals.h"
-#include "util/line.h"
 #include "util/str.h"
 
 #define HISTORY_CAP 1000
 #define HISTORY_FILE "/.nullsh_history"
-#define CWD_MAX 4096
+
+// A script that cannot be opened is a command that was never found.
+#define EXIT_NO_SCRIPT 127
 
 // The terminal moves to a high fd so a builtin's redirect of fd 0 cannot lose it.
 #define TTY_FD_MIN 10
+
+// $0 answers even when there is no script path and no argv worth borrowing.
+static char *self_argv[] = {"nullsh", NULL};
 
 // NULL when HOME says nothing. Caller nsh_frees the result.
 static char *history_path(void) {
@@ -43,34 +45,14 @@ static char *history_path(void) {
     return out;
 }
 
-// The tilde replaces HOME only on a whole path component, never in /homework.
-// The editor needs the prompt as text, so it is built rather than printed.
-static void prompt_build(Str *p) {
-    char cwd[CWD_MAX];
-    const char *home = getenv("HOME");
-    size_t hlen = (home == NULL) ? 0 : strlen(home);
-    str_clear(p);
-    if (getcwd(cwd, sizeof cwd) == NULL) {
-        str_append(p, "nullsh$ ");
-        return;
-    }
-    if (hlen > 0 && strncmp(cwd, home, hlen) == 0 &&
-        (cwd[hlen] == '\0' || cwd[hlen] == '/')) {
-        str_append(p, "nullsh:~");
-        str_append(p, cwd + hlen);
-    } else {
-        str_append(p, "nullsh:");
-        str_append(p, cwd);
-    }
-    str_append(p, "$ ");
-}
-
 // Dispositions are installed either way: a script should not die to a SIGINT
 // aimed at its pipeline, and & needs SIGCHLD reaping even with no terminal.
-static void shell_setup(Shell *sh) {
+// A script names its own input, so a tty on fd 0 does not make it interactive
+// and the terminal handoff stays where the invoking shell left it.
+static void shell_setup(Shell *sh, bool may_prompt) {
     signals_install_shell();
     sh->shell_pgid = getpgrp();
-    if (!isatty(STDIN_FILENO)) {
+    if (!may_prompt || !isatty(STDIN_FILENO)) {
         return;
     }
     sh->interactive = true;
@@ -85,79 +67,44 @@ static void shell_setup(Shell *sh) {
     }
 }
 
-// The prompt's garbage collection: drain every pending child event, then talk.
-static void reap_jobs(void) {
-    if (!signals_chld_take()) {
-        return;
-    }
-    int status = 0;
-    pid_t pid;
-    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED)) > 0) {
-        jobs_update(pid, status);
-    }
-    jobs_reap_notify(stdout);
-}
-
-int main(void) {
+int main(int argc, char **argv) {
     Shell sh = {0};
     sh.tty_fd = -1;
     jobs_init();
-    shell_setup(&sh);
+
+    FILE *script = NULL;
+    if (argc > 1) {
+        script = fopen(argv[1], "r");
+        if (script == NULL) {
+            fprintf(stderr, "nullsh: %s: %s\n", argv[1], strerror(errno));
+            return EXIT_NO_SCRIPT;
+        }
+        // $0 is the script path and $1.. are what came after it.
+        sh.argc = argc - 1;
+        sh.argv = argv + 1;
+    } else {
+        sh.argc = 1;
+        sh.argv = self_argv;
+    }
+
+    shell_setup(&sh, script == NULL);
     history_init(&sh.history, HISTORY_CAP);
-    char *hist_file = history_path();
+    // A script must not disturb the history file the prompt owns.
+    char *hist_file = (script == NULL) ? history_path() : NULL;
     if (hist_file != NULL) {
         // A first run has no file yet, which is not an error.
         history_load(&sh.history, hist_file);
     }
 
-    Str line;
-    Str prompt;
-    str_init(&line);
-    str_init(&prompt);
-    TokenList tl = {{NULL, 0, 0}};
-    Pipeline pl = {{NULL, 0, 0}, false};
-
-    for (;;) {
-        reap_jobs();
-        NshError err;
-        if (sh.interactive) {
-            prompt_build(&prompt);
-            // Raw mode is entered and left inside the call, so a command that
-            // runs next inherits a cooked terminal.
-            err = edit_read_line(prompt.data, &sh.history, &line);
-        } else {
-            err = line_read(stdin, &line);
-        }
-        if (err == NSH_EOF) {
-            if (sh.interactive) {
-                fputc('\n', stdout);
-            }
-            break;
-        }
-        if (err != NSH_OK) {
-            fputs("nullsh: read error on stdin\n", stderr);
-            sh.last_status = 1;
-            break;
-        }
-        if (line.len == 0) {
-            continue;
-        }
-
-        // Recorded before parsing, so a bad line can still be recalled.
-        history_add(&sh.history, line.data);
-        if (lexer_scan(line.data, &tl) != NSH_OK ||
-            parser_parse(&tl, &pl) != NSH_OK) {
-            fputs("nullsh: syntax error\n", stderr);
-            sh.last_status = 2;
-        } else {
-            exec_pipeline(&sh, &pl);
-        }
-        token_list_free(&tl);
-        pipeline_free(&pl);
-        if (sh.want_exit) {
-            break;
-        }
+    if (script != NULL) {
+        run_stream(&sh, script);
+        fclose(script);
+    } else if (sh.interactive) {
+        run_interactive(&sh);
+    } else {
+        run_stream(&sh, stdin);
     }
+
     if (hist_file != NULL) {
         if (history_save(&sh.history, hist_file) != NSH_OK) {
             fprintf(stderr, "nullsh: could not save history to %s\n",
@@ -165,11 +112,8 @@ int main(void) {
         }
         nsh_free(hist_file);
     }
-    token_list_free(&tl);
-    pipeline_free(&pl);
-    str_free(&line);
-    str_free(&prompt);
     history_free(&sh.history);
+    func_free_all();
     jobs_free_all();
     // Ctrl-D leaves with the status of the last command, like bash.
     return sh.want_exit ? sh.exit_code : sh.last_status;
