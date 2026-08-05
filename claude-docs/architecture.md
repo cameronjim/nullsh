@@ -1,16 +1,20 @@
 # nullsh architecture
 
-Updated at the end of every phase. Current as of: Phase 8 (polish).
+Updated at the end of every phase. Current as of: Phase 9 (the interpreter).
 
 ## Big picture
 
-nullsh is a single binary. The REPL in `main.c` drives a pipeline of small modules:
+nullsh is a single binary. The read-eval drivers in `shell/run.c` drive a pipeline of small modules:
 
 ```
-read line -> lexer -> expand -> parser -> exec
-                                            |- builtin dispatch (in-process)
-                                            |- fork/exec external programs
+read line(s) -> lexer -> parser -> AST -> eval -> exec
+                                          |       |- builtin dispatch (in-process)
+                                          |       |- function call (in-process, or in the stage child)
+                                          |       |- fork/exec external programs
+                                          |- control flow flags, loop depth, the function table
 ```
+
+Expansion is not a stage of its own: `exec` calls into `expand.c` per word at the moment a command runs.
 
 Everything allocates through `src/alloc/` (`nsh_malloc` and friends). Until Phase 2 those are checked wrappers over libc malloc; after Phase 2 they are a real allocator over mmap and the wrapper is gone. Call sites never change.
 
@@ -22,19 +26,33 @@ The learning tools (`inspect`, `netmon`, `emu`, `heap`) are builtins. They live 
 |---|---|---|
 | `src/alloc/` | nsh_* over mmap arenas, firstfit + buddy strategies, guard canaries, heap builtin | done |
 | `src/util/` | Str, Vec, line reader, NshError | done |
-| `src/shell/` | lexer, expand, parser, exec, spawn, redirect, jobs, signals, builtins, history | done |
+| `src/shell/` | lexer, expand, parser, exec, spawn, redirect, jobs, signals, builtins, history, line editing | done |
+| `src/shell/` (interpreter) | ast.c the tagged-union tree plus deep clone, parser.c recursive descent with INCOMPLETE detection, eval.c the tree walker and control flow, func.c the function table, run.c the read-eval drivers for all three input styles | done |
 | `src/inspect/` | elf.c defensive parser, print.c formatting, inspect builtin | done |
 | `src/emu/` | chip-8 cpu (pure), display renderers, keypad map, raw terminal, emu loop | done |
 | `src/netmon/` | AF_PACKET capture, defensive decode, filter, print, netmon builtin | done |
 | `tests/` | harness.h, harness_selftest.c, demo.sh, integration/ scripts | done |
 
-`src/main.c` owns the REPL: prompt, `line_read`, lex, parse, exec, the job reap
-cycle before each prompt, and loading and saving `~/.nullsh_history`. Unit tests
-do not live in `tests/`; each one sits beside its module as `foo_test.c`.
+`src/shell/run.c` owns the read-eval loops: the prompt, line editing, the PS2
+continuation prompt, the line accumulator, lex, parse, eval, and the job reap
+cycle before each prompt. `run_interactive` and `run_stream` are the two entry
+points, and a script file is just `run_stream` over an opened `FILE *`.
+`src/main.c` is now startup and teardown only: argument handling, signals, the
+job table, the controlling terminal, loading and saving `~/.nullsh_history`, and
+the exit status. Unit tests do not live in `tests/`; each one sits beside its
+module as `foo_test.c`.
 
 ## Decisions and why
 
-- **Flat pipeline grammar, no AST.** The shell grammar is `pipeline := cmd ('|' cmd)* ['&']` plus redirects. A vector of Command structs represents it fully. An AST earns its keep only with `&&`, `if`, subshells, which are out of scope.
+- **The flat pipeline grammar earned its AST in phase 9.** Through phase 8 the grammar was `pipeline := cmd ('|' cmd)* ['&']` plus redirects, and a vector of Command structs represented it fully, because `a | b` is a sequence. `a && b` is a decision instead: whether `b` runs depends on the result of `a`, and `if` nests arbitrarily deep, so the structure is recursive and a flat list cannot hold it. Phase 9 added conditionals, loops and functions, which is exactly the point where the tree starts paying for itself. `NODE_PIPELINE` embeds the old `Pipeline` by value, so exec_pipeline stays the single place processes are born and none of phases 1 through 4 had to move.
+- **Keywords are contextual and the lexer stays dumb.** The lexer emits words and operators and never decides that a word means something. Only the parser knows that a bare one-segment word in command position is `if` or `done`, which is why `echo if` prints "if" and a file named `done` is an ordinary argument. Real shells work this way and the alternative, a keyword table in the lexer, would need the lexer to track grammar position. One divergence follows from it: the token model does not record whether a word was double quoted, so `"if"` in command position is still the keyword. That fact is in the manual's limitations table rather than being fixed.
+- **INCOMPLETE is a different error from SYNTAX, and that difference is the continuation prompt.** `if true` with nothing after it is unfinished, not wrong. Running out of tokens inside any construct, after `&&`, `||`, `|` or `!`, or inside an unterminated quote returns `NSH_ERR_INCOMPLETE`; a real dead end like `fi` with no `if` stays `NSH_ERR_SYNTAX`. The driver in run.c treats the first as "print `> ` and read another line", joining lines with `\n` and re-lexing the whole buffer, and the second as an error with status 2. Without the split, the shell would have to guess.
+- **Control flow is a flag on the Shell, not a return value.** `break` inside an `if` inside a `while` has to unwind several levels of the evaluator's recursion. Threading that through every return value would infect functions that have nothing to do with loops, so `break`, `continue` and `return` set `sh->flow` and every list evaluator checks it after each item and stops early. The loop evaluator consumes BREAK and CONTINUE, the function call consumes RETURN, and `sh->loop_depth` and `sh->func_depth` are what gate the three builtins.
+- **Positional parameters swap like a stack around a function call.** `$1` inside a function is the function's first argument and `$1` after the call is whatever it was before. The evaluator saves `sh->argc/argv`, points them at the call's argv, runs the body, and restores them on every exit path. Scripts set the same two fields once at startup, so `$0`, `$1`..`$9` and `$#` are one mechanism serving both instead of two that can disagree.
+- **The SIGINT watch exists because the shell ignores SIGINT.** Ctrl-C spares the prompt because the shell sets SIGINT to SIG_IGN and only the foreground process group receives the signal. A loop built entirely of builtins forks nothing, so nobody would receive it and `while true; do ...; done` would be unkillable. The evaluator turns on `signals_int_watch(1)` when loop depth goes 0 to 1 and off again at 1 to 0, checks `signals_int_take()` each iteration, and also reads a pipeline status of 130 as a stop request. Either path ends the loop with status 130.
+- **Functions cannot shadow builtins.** Dispatch for a command word is builtin, then function, then PATH search. bash puts functions first; nullsh does not, so no script can define `exit` or `cd` and lock the shell out of its own controls. The cost is that a function named after a builtin is silently unreachable, which is written down in the manual rather than diagnosed.
+- **A funcdef body is cloned into the function table.** A definition inside a loop or an `if` is evaluated every time control reaches it, so the table cannot borrow a pointer into a parse tree that the driver frees after each program. `ast_clone` deep-copies the body at definition time and `func_define` owns the copy, which also means a redefinition can free the old body without caring who is running.
+- **The read-eval loop lives in run.c, not main.c.** Phase 9 turned one line into a buffer of lines and one input style into three, and the loop grew a PS2 prompt, an accumulator and an INCOMPLETE retry. Left in `main.c` it would have crossed the 500-line rule and stayed untestable, because `main.c` is excluded from every test link. `run.c` exposes `run_interactive` and `run_stream`, both taking a Shell, so integration tests drive the same code the binary does and `main.c` shrinks back to startup and teardown.
 - **Builtins run in-process only when alone.** A builtin inside a pipeline forks like an external command; only a lone builtin mutates the shell, with its redirects applied around it via fd save/restore. This keeps `cd` correct and pipelines uniform.
 - **Job control is terminal ownership, not scheduling.** Every launch lands in its own process group (parent and child both setpgid to close the race); the terminal's foreground group is swapped with tcsetpgrp around each foreground wait and always swapped back, even on a stop. Only the handoff is tty-gated: groups and reaping work in scripts too, which is a documented divergence from bash (which disables job control when non-interactive).
 - **The SIGCHLD handler sets one flag.** All real work (waitpid WNOHANG|WUNTRACED|WCONTINUED loop, job table updates, Done notifications) happens in the REPL before each prompt, because almost nothing is async-signal-safe.
