@@ -425,6 +425,7 @@ a forked child when it is a stage of a pipeline. `help` prints the list.
 | `inspect [FLAGS] FILE` | show the structure of an ELF file |
 | `jobs` | list the background and stopped jobs |
 | `netmon IFACE [FLAGS]` | decode packets off an interface |
+| `resolve NAME [FLAGS]` | look a name up over DNS and print the answer records |
 | `return [N]` | leave the current function |
 | `unset NAME` | remove a variable from the environment |
 
@@ -493,6 +494,83 @@ to stderr on the way out. netmon installs its own SIGINT
 handler for the duration and puts the previous one back, because in the
 foreground it is running inside a shell that ignores SIGINT.
 
+### resolve
+
+```
+resolve NAME [--server IP] [--port N] [--timeout MS] [--tries N]
+```
+
+Where netmon decodes packets other programs made, `resolve` makes one: it
+builds a DNS query byte by byte from RFC 1035, sends it over UDP, and parses
+the reply, name compression and all.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `NAME` | required, and first | the name to look up; a trailing dot is accepted. The query type is always A |
+| `--server IP` | the first IPv4 `nameserver` line of `/etc/resolv.conf` | the dotted IPv4 address of the server to ask |
+| `--port N` | 53 | the UDP port on that server |
+| `--timeout MS` | 2000 | milliseconds to wait for a reply, per try |
+| `--tries N` | 2 | how many times the query is sent before giving up |
+| `NSH_RESOLV_CONF=PATH` | `/etc/resolv.conf` | read the nameserver list from PATH instead, which is what the tests use |
+
+An IPv6 `nameserver` line is skipped rather than tried. If the file names no
+IPv4 nameserver and no `--server` was given, that is an error asking you to
+pass one.
+
+What a lookup prints:
+
+```
+;; id 4242 flags qr rd ra rcode NOERROR answers 2
+example.com. 300 IN CNAME edge.example.net.
+edge.example.net. 60 IN A 93.184.216.34
+```
+
+| Status | When |
+|---|---|
+| 0 | a reply came back with rcode NOERROR and parsed, even when it carried zero answers |
+| 1 | everything else: usage errors, no nameserver, socket failure, silence after every try, NXDOMAIN and the other rcodes, a reply id mismatch, a malformed reply |
+| 130 | Ctrl-C interrupted the wait |
+
+Errors print as `nullsh: resolve: <reason>` in the netmon style, and a bad
+argument gets a usage line.
+
+Reading the output. The `;;` line always comes first and reports the header:
+the query id, then the flags that are actually set, of `qr aa tc rd ra` and in
+that order, then `rcode NAME` and how many answer records followed. After it
+comes one line per answer, each with the record's name, its ttl in seconds, its
+class (`IN`, or `CLASS%u` for a class nullsh has no name for), its type, and
+then the address for an A record, the target for a CNAME, or `TYPE%u (%u
+bytes)` for a type nullsh does not decode. Every name carries a trailing dot
+because that is what the wire carries: a name ends in the empty root label, and
+`example.com.` is the whole name while `example.com` would be a relative one. A
+CNAME chain is several lines read top to bottom, the name you asked for
+pointing at its alias and the alias further down carrying the address. Two more
+`;;` lines can appear before the records: `;; truncated reply` when the server
+had to cut the reply to fit 512 bytes, after which what you see is only what
+arrived, and `;; recursion not available` when the server will not chase the
+answer on your behalf.
+
+Watching your own query. `resolve` is the other half of `netmon`, so run the
+capture as a background job and the lookup in the foreground and the packets on
+screen are yours:
+
+```
+nullsh:~$ netmon eth0 --filter udp --port 53 &
+[1] 812
+nullsh:~$ resolve example.com
+```
+
+netmon needs root for its raw socket, so that pairing happens in a
+`sudo nullsh` session. The query leaving and the reply arriving are two UDP
+packets on port 53, and the `;;` line's id is the same id netmon just watched
+cross the wire.
+
+One note on those ids. nullsh seeds the query id from the monotonic clock xor
+the pid, which is fine for a tool you read but is guessable. An attacker who
+can guess the id and the source port can answer before the real server does,
+which is cache poisoning, and it is why real resolvers randomise both from a
+cryptographic source.
+
 ## Job control
 
 | Syntax or key | Effect |
@@ -560,5 +638,12 @@ works, not a replacement for bash.
 | Lines wider than the terminal | the repaint wraps and the cursor jump lands on the wrong row |
 | `inspect` on 32-bit or big-endian ELF | rejected with a message, never parsed halfway |
 | `netmon` beyond IPv4 | Ethernet and IPv4 only, TCP and UDP only, no IPv6, no promiscuous mode, no kernel BPF; filtering happens after decoding |
+| `resolve` beyond A records | the query type is always A and a query carries exactly one question: no AAAA, no MX, no TXT |
+| TCP fallback on a truncated reply | `;; truncated reply` and the records that fit; a real client would ask again over TCP |
+| EDNS(0) | no OPT record is sent, so a reply is capped at the classic 512 bytes |
+| IPv6 nameservers | `--server` takes a dotted IPv4 address, and an IPv6 `nameserver` line in the config is skipped |
+| Anything in `resolv.conf` but `nameserver` | that one file is the only config read, and only its `nameserver` lines: no `search`, no `domain`, no `ndots`, so NAME goes out exactly as you typed it |
+| Unpredictable query ids | the id is the monotonic clock xor the pid, which is guessable; real resolvers randomise the id and the source port against cache poisoning |
+| Re-listening after a reply id mismatch | `nullsh: resolve: reply id mismatch` and status 1; nullsh does not keep waiting for the right one |
 | Portability | Linux only: `mmap`, `AF_PACKET`, `tcsetpgrp`, `setpgid` and `/proc` are called directly |
 | Out of memory | `nsh_malloc` never returns NULL, so a failed allocation prints and aborts |
