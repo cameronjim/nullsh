@@ -13,6 +13,7 @@
 #include "../../tests/harness.h"
 
 #define PATH_BUF 4096
+#define HELP_BUF 4096
 
 static void shell_start(Shell *sh) {
     (void)history_init(&sh->history, 100);
@@ -61,6 +62,9 @@ TEST(lookup_finds_every_builtin) {
     ASSERT_TRUE(builtin_lookup("break") != NULL);
     ASSERT_TRUE(builtin_lookup("continue") != NULL);
     ASSERT_TRUE(builtin_lookup("return") != NULL);
+    ASSERT_TRUE(builtin_lookup("inspect") != NULL);
+    ASSERT_TRUE(builtin_lookup("netmon") != NULL);
+    ASSERT_TRUE(builtin_lookup("resolve") != NULL);
 }
 
 TEST(lookup_rejects_non_builtins) {
@@ -673,6 +677,46 @@ TEST(return_rejects_too_many_arguments) {
     ASSERT_EQ(builtin_lookup("return")(&sh, 3, argv), 2);
     ASSERT_EQ(sh.flow, FLOW_NONE);
     shell_stop(&sh);
+}
+
+// help writes straight to stdout, so the test lends it a file and takes it back
+static const char *capture_help(Shell *sh) {
+    static char buf[HELP_BUF];
+    buf[0] = '\0';
+    FILE *tmp = tmpfile();
+    if (tmp == NULL) {
+        return buf;
+    }
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    if (saved >= 0 && dup2(fileno(tmp), STDOUT_FILENO) >= 0) {
+        char *argv[] = {"help", NULL};
+        builtin_lookup("help")(sh, 1, argv);
+        fflush(stdout);
+        dup2(saved, STDOUT_FILENO);
+    }
+    if (saved >= 0) {
+        close(saved);
+    }
+    rewind(tmp);
+    size_t got = fread(buf, 1, sizeof buf - 1, tmp);
+    buf[got] = '\0';
+    fclose(tmp);
+    return buf;
+}
+
+TEST(help_lists_every_builtin_line) {
+    Shell sh;
+    shell_start(&sh);
+    const char *text = capture_help(&sh);
+    shell_stop(&sh);
+
+    ASSERT_TRUE(strstr(text, "nullsh builtins:\n") != NULL);
+    ASSERT_TRUE(strstr(text, "\n  netmon IFACE     ") != NULL);
+    ASSERT_TRUE(strstr(text,
+                       "\n  resolve NAME     dns lookup, --server IP, "
+                       "--port N,\n                   --timeout MS, "
+                       "--tries N\n") != NULL);
 }
 
 TEST(help_returns_zero) {

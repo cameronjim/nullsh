@@ -1,6 +1,6 @@
 # nullsh architecture
 
-Updated at the end of every phase. Current as of: Phase 9 (the interpreter).
+Updated at the end of every phase. Current as of: Phase 10 (the DNS resolver).
 
 ## Big picture
 
@@ -31,6 +31,7 @@ The learning tools (`inspect`, `netmon`, `emu`, `heap`) are builtins. They live 
 | `src/inspect/` | elf.c defensive parser, print.c formatting, inspect builtin | done |
 | `src/emu/` | chip-8 cpu (pure), display renderers, keypad map, raw terminal, emu loop | done |
 | `src/netmon/` | AF_PACKET capture, defensive decode, filter, print, netmon builtin | done |
+| `src/resolve/` | three layers with no leakage between them: dns.c the pure RFC 1035 codec (build a query, parse a reply, name the rcodes; no I/O), net.c one dumb UDP exchange (socket, send, poll with a timeout, retry, SIGINT watch; no parsing), resolve.c the builtin (arguments, resolv.conf, id generation and matching, output formatting) | done |
 | `tests/` | harness.h, harness_selftest.c, demo.sh, integration/ scripts | done |
 
 `src/shell/run.c` owns the read-eval loops: the prompt, line editing, the PS2
@@ -74,6 +75,12 @@ module as `foo_test.c`.
 - **The emulator restores the terminal from inside the handler.** `term_emergency_restore` uses only `tcsetattr`, `fcntl` and `write`. The SIGTSTP handler restores cooked mode, re-raises under `SIG_DFL`, then re-arms itself, so Ctrl-Z out of `emu` never leaves a wrecked terminal behind, and SIGCONT sets a flag the loop turns back into raw mode.
 - **An interrupted capture read is not an error.** `capture_recv` returns 0 on EINTR so the netmon loop re-checks its stop flag; the SIGINT handler is installed without SA_RESTART for exactly that reason, and netmon restores the previous disposition on the way out because in the foreground it is running inside a shell that ignores SIGINT.
 - **Non-IPv4 frames decode successfully.** `decode_frame` sets `has_ip` false for ARP, IPv6 and anything else rather than failing, so netmon's malformed counter means malformed and not merely uninteresting.
+- **The wire codec repeats netmon's explicit-shift rule; the socket plumbing is exempt from it.** Every multi-byte field in a DNS message is big endian, and `dns.c` reads and writes each one as `(uint16_t)(p[0] << 8 | p[1])` rather than calling ntohs or htons, because writing the shift out is the lesson netmon began and this phase finishes. `net.c` does not follow the rule: `sockaddr_in` and `inet_pton` on the user's dotted server address are API convention, not protocol decoding, and hand-shifting them would teach the wrong thing about which bytes nullsh actually owns.
+- **A compression pointer must point strictly backwards, and one name follows at most 32 of them.** A length byte with its top two bits set turns the next 14 bits into an offset back into the packet where the name continues, which is how DNS avoids repeating names. Nothing on the wire enforces sanity, so a malicious or broken packet can aim a pointer at itself, forward into garbage, or around a cycle. Strictly-backwards makes a cycle arithmetically impossible; the 32-jump cap bounds the work that a legal-looking chain of tiny backward hops can cost. Either violation is a parse error, so a hostile packet gets a clean failure and never a hung parser.
+- **The transport accepts datagrams only from the server it queried, and the id check lives in the builtin.** `dns_exchange` ignores a datagram whose source is not the address and port it sent to, which is the cheapest possible off-path filter and belongs with the socket because only the socket layer knows the peer. Matching the reply id against the query id is a protocol fact, not a socket fact, so it stays in resolve.c beside the id generation, and net.c keeps its whole contract at "send these bytes, hand back the first answer". A mismatch there prints `nullsh: resolve: reply id mismatch` and exits 1 instead of listening again, which is a documented simplification.
+- **The SIGINT flag-handler pattern comes straight from netmon, because the shell ignores SIGINT.** A lone builtin blocked in poll(2) would never see Ctrl-C: the shell sets SIGINT to SIG_IGN and a builtin is the shell. So net.c installs its own flag-setting handler without SA_RESTART for the duration of the exchange and restores the previous disposition on every exit path. EINTR wakes the poll, the loop reads the flag instead of retrying, and the builtin leaves with status 130.
+- **DnsRecord carries fixed name buffers rather than heap strings.** RFC 1035 caps a label at 63 bytes and a whole name at 255, so `char name[DNS_NAME_MAX + 1]` is the spec's own bound plus a terminator, not a guess that a longer name could embarrass. Parsing therefore allocates exactly one object, the Vec of records, which gives the caller a single ownership rule and removes every partial-cleanup path from inside the parser.
+- **Exit status 0 means a NOERROR conversation, not a nonempty answer.** A name that exists with no A record answers NOERROR with ancount 0; the lookup worked and found nothing, which is not a failure. NXDOMAIN and the other rcodes are status 1, along with usage errors, a missing nameserver, socket failure, silence after every try, an id mismatch and a malformed reply, and Ctrl-C during the wait is 130. Splitting it this way lets a script ask "did the exchange work" and "is there an address" as the two separate questions they are.
 - **History records the raw line before parsing.** A line that fails to lex is still recallable, and a repeat of the newest entry is dropped so holding Enter does not fill the ring.
 
 ## Build
