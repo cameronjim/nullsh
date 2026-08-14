@@ -19,6 +19,12 @@ static void shell_start(Shell *sh) {
     sh->last_status = 0;
     sh->want_exit = false;
     sh->exit_code = 0;
+    sh->flow = FLOW_NONE;
+    sh->flow_status = 0;
+    sh->loop_depth = 0;
+    sh->func_depth = 0;
+    sh->argc = 0;
+    sh->argv = NULL;
 }
 
 static void shell_stop(Shell *sh) {
@@ -52,6 +58,9 @@ TEST(lookup_finds_every_builtin) {
     ASSERT_TRUE(builtin_lookup("unset") != NULL);
     ASSERT_TRUE(builtin_lookup("history") != NULL);
     ASSERT_TRUE(builtin_lookup("emu") != NULL);
+    ASSERT_TRUE(builtin_lookup("break") != NULL);
+    ASSERT_TRUE(builtin_lookup("continue") != NULL);
+    ASSERT_TRUE(builtin_lookup("return") != NULL);
 }
 
 TEST(lookup_rejects_non_builtins) {
@@ -531,6 +540,138 @@ TEST(history_rejects_arguments) {
     char *argv[] = {"history", "10", NULL};
     ASSERT_EQ(fn(&sh, 2, argv), 1);
     ASSERT_EQ(history_count(&sh.history), 1);
+    shell_stop(&sh);
+}
+
+// The flow builtins: break, continue and return
+
+// The evaluator maintains loop_depth, so a test sets it by hand.
+TEST(break_and_continue_outside_a_loop_are_an_error) {
+    Shell sh;
+    shell_start(&sh);
+    char *br[] = {"break", NULL};
+    char *co[] = {"continue", NULL};
+
+    ASSERT_EQ(builtin_lookup("break")(&sh, 1, br), 1);
+    ASSERT_EQ(sh.flow, FLOW_NONE);
+    ASSERT_EQ(builtin_lookup("continue")(&sh, 1, co), 1);
+    ASSERT_EQ(sh.flow, FLOW_NONE);
+    shell_stop(&sh);
+}
+
+TEST(break_and_continue_inside_a_loop_set_the_flag) {
+    Shell sh;
+    shell_start(&sh);
+    sh.loop_depth = 1;
+    char *br[] = {"break", NULL};
+    ASSERT_EQ(builtin_lookup("break")(&sh, 1, br), 0);
+    ASSERT_EQ(sh.flow, FLOW_BREAK);
+
+    sh.flow = FLOW_NONE;
+    sh.loop_depth = 3;
+    char *co[] = {"continue", NULL};
+    ASSERT_EQ(builtin_lookup("continue")(&sh, 1, co), 0);
+    ASSERT_EQ(sh.flow, FLOW_CONTINUE);
+    shell_stop(&sh);
+}
+
+// bash takes an optional level count; nullsh takes nothing at all.
+TEST(break_and_continue_reject_every_argument) {
+    Shell sh;
+    shell_start(&sh);
+    sh.loop_depth = 2;
+
+    char *br[] = {"break", "2", NULL};
+    ASSERT_EQ(builtin_lookup("break")(&sh, 2, br), 2);
+    ASSERT_EQ(sh.flow, FLOW_NONE);
+
+    char *co[] = {"continue", "x", NULL};
+    ASSERT_EQ(builtin_lookup("continue")(&sh, 2, co), 2);
+    ASSERT_EQ(sh.flow, FLOW_NONE);
+
+    char *many[] = {"break", "1", "2", NULL};
+    ASSERT_EQ(builtin_lookup("break")(&sh, 3, many), 2);
+    ASSERT_EQ(sh.flow, FLOW_NONE);
+    shell_stop(&sh);
+}
+
+// The argument check runs first, so a bad word outside a loop is still a 2.
+TEST(break_reports_its_argument_before_the_loop_check) {
+    Shell sh;
+    shell_start(&sh);
+    char *br[] = {"break", "2", NULL};
+    ASSERT_EQ(builtin_lookup("break")(&sh, 2, br), 2);
+    ASSERT_EQ(sh.flow, FLOW_NONE);
+    shell_stop(&sh);
+}
+
+TEST(return_outside_a_function_is_an_error) {
+    Shell sh;
+    shell_start(&sh);
+    sh.loop_depth = 1;
+    char *bare[] = {"return", NULL};
+    char *with_arg[] = {"return", "3", NULL};
+
+    ASSERT_EQ(builtin_lookup("return")(&sh, 1, bare), 1);
+    ASSERT_EQ(sh.flow, FLOW_NONE);
+    ASSERT_EQ(builtin_lookup("return")(&sh, 2, with_arg), 1);
+    ASSERT_EQ(sh.flow, FLOW_NONE);
+    ASSERT_EQ(sh.flow_status, 0);
+    shell_stop(&sh);
+}
+
+TEST(return_without_an_argument_reuses_the_last_status) {
+    Shell sh;
+    shell_start(&sh);
+    sh.func_depth = 1;
+    sh.last_status = 9;
+    char *argv[] = {"return", NULL};
+
+    ASSERT_EQ(builtin_lookup("return")(&sh, 1, argv), 9);
+    ASSERT_EQ(sh.flow, FLOW_RETURN);
+    ASSERT_EQ(sh.flow_status, 9);
+    shell_stop(&sh);
+}
+
+TEST(return_takes_a_status_in_range) {
+    static const char *args[] = {"0", "1", "42", "255"};
+    static const int wants[] = {0, 1, 42, 255};
+    for (size_t i = 0; i < sizeof wants / sizeof wants[0]; i++) {
+        Shell sh;
+        shell_start(&sh);
+        sh.func_depth = 2;
+        sh.last_status = 7;
+        char *argv[] = {"return", (char *)args[i], NULL};
+        ASSERT_EQ(builtin_lookup("return")(&sh, 2, argv), wants[i]);
+        ASSERT_EQ(sh.flow, FLOW_RETURN);
+        ASSERT_EQ(sh.flow_status, wants[i]);
+        shell_stop(&sh);
+    }
+}
+
+// Out of range is refused, not masked, so 256 never quietly becomes 0.
+TEST(return_rejects_a_bad_status) {
+    static const char *args[] = {"abc", "12x", "", "256", "-1", "1000"};
+    for (size_t i = 0; i < sizeof args / sizeof args[0]; i++) {
+        Shell sh;
+        shell_start(&sh);
+        sh.func_depth = 1;
+        sh.last_status = 4;
+        char *argv[] = {"return", (char *)args[i], NULL};
+        ASSERT_EQ(builtin_lookup("return")(&sh, 2, argv), 2);
+        ASSERT_EQ(sh.flow, FLOW_NONE);
+        ASSERT_EQ(sh.flow_status, 0);
+        shell_stop(&sh);
+    }
+}
+
+TEST(return_rejects_too_many_arguments) {
+    Shell sh;
+    shell_start(&sh);
+    sh.func_depth = 1;
+    char *argv[] = {"return", "1", "2", NULL};
+    ASSERT_EQ(builtin_lookup("return")(&sh, 3, argv), 2);
+    ASSERT_EQ(sh.flow, FLOW_NONE);
     shell_stop(&sh);
 }
 

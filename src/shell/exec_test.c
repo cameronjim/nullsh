@@ -46,6 +46,12 @@ static void setup(void) {
     g_sh.interactive = false;
     g_sh.tty_fd = -1;
     g_sh.shell_pgid = getpgrp();
+    g_sh.flow = FLOW_NONE;
+    g_sh.flow_status = 0;
+    g_sh.loop_depth = 0;
+    g_sh.func_depth = 0;
+    g_sh.argc = 0;
+    g_sh.argv = NULL;
     jobs_init();
     if (getcwd(g_cwd, sizeof g_cwd) == NULL) {
         fprintf(stderr, "exec_test: getcwd failed\n");
@@ -323,6 +329,101 @@ TEST(dollar_question_carries_the_last_status) {
     ASSERT_EQ(run("export NSH_T_STATUS=$?"), 0);
     ASSERT_STR_EQ(getenv("NSH_T_STATUS"), "0");
     ASSERT_EQ(run("unset NSH_T_STATUS"), 0);
+}
+
+// The positionals outlive one test, so they are not a stack array.
+static char *g_args[] = {"script.sh", NULL, "two", NULL};
+
+static void positionals_on(const char *first) {
+    g_args[1] = (char *)first;
+    g_sh.argc = 3;
+    g_sh.argv = g_args;
+}
+
+static void positionals_off(void) {
+    g_sh.argc = 0;
+    g_sh.argv = NULL;
+}
+
+// Proof the context reaches build_argv on the lone command path.
+TEST(positionals_expand_for_a_lone_command) {
+    char path[SCRATCH_BUF];
+    char line[LINE_BUF];
+    snprintf(path, sizeof path, "%s/pos_one.txt", g_tmp);
+    positionals_on("one");
+    snprintf(line, sizeof line, "/bin/echo $0 $1 $2 $3 $# > %s", path);
+    int status = run(line);
+    positionals_off();
+
+    ASSERT_EQ(status, 0);
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_STR_EQ(body, "script.sh one two  2\n");
+}
+
+// Proof it reaches the forked child too, which expands the words again.
+TEST(positionals_expand_inside_a_pipeline) {
+    char path[SCRATCH_BUF];
+    char line[LINE_BUF];
+    snprintf(path, sizeof path, "%s/pos_pipe.txt", g_tmp);
+    positionals_on("piped");
+    snprintf(line, sizeof line, "/bin/echo $1 $# | /bin/cat > %s", path);
+    int status = run(line);
+    positionals_off();
+
+    ASSERT_EQ(status, 0);
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_STR_EQ(body, "piped 2\n");
+}
+
+// And that redirect targets get the same context as the argument words.
+TEST(a_redirect_target_can_come_from_a_positional) {
+    char path[SCRATCH_BUF];
+    snprintf(path, sizeof path, "%s/pos_target.txt", g_tmp);
+    positionals_on(path);
+    int status = run("/bin/echo via_pos > $1");
+    positionals_off();
+
+    ASSERT_EQ(status, 0);
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_STR_EQ(body, "via_pos\n");
+}
+
+// With no positionals set, a digit is a name that expands to nothing.
+TEST(positionals_are_empty_when_the_shell_has_none) {
+    char path[SCRATCH_BUF];
+    char line[LINE_BUF];
+    snprintf(path, sizeof path, "%s/pos_none.txt", g_tmp);
+    snprintf(line, sizeof line, "/bin/echo [$1] [$#] > %s", path);
+    ASSERT_EQ(run(line), 0);
+
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_STR_EQ(body, "[] [0]\n");
+}
+
+// Dispatch order is builtin, then function, then PATH. The evaluator is a
+// separate module, so what is provable here is that a builtin still wins and
+// that a word naming no function still reaches the PATH search.
+TEST(dispatch_prefers_a_builtin_then_falls_through_to_path) {
+    char path[SCRATCH_BUF];
+    char line[LINE_BUF];
+    snprintf(path, sizeof path, "%s/dispatch.txt", g_tmp);
+    snprintf(line, sizeof line, "help > %s", path);
+    ASSERT_EQ(run(line), 0);
+
+    char body[READ_BUF];
+    read_file(path, body, sizeof body);
+    ASSERT_TRUE(strstr(body, "nullsh builtins") != NULL);
+
+    ASSERT_EQ(run("true"), 0);
+    ASSERT_EQ(run("/bin/false"), 1);
+    int saved = stderr_off();
+    int missing = run("nsh_not_a_builtin_or_function");
+    stderr_on(saved);
+    ASSERT_EQ(missing, 127);
 }
 
 // An unclosed ${ is caught in the expander, after a clean lex and parse.

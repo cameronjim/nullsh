@@ -152,14 +152,70 @@ static int bi_exit(Shell *sh, int argc, char **argv) {
     return sh->exit_code;
 }
 
+// The largest status a return may name, since a status is one byte on the wire.
+#define STATUS_MAX 255
+
+// break and continue take no argument at all, unlike bash's optional count.
+static int bi_flow(Shell *sh, int argc, const char *name, FlowState flow) {
+    if (argc > 1) {
+        bi_err(name, "too many arguments");
+        return EXIT_BAD_ARG;
+    }
+    if (sh->loop_depth <= 0) {
+        bi_err(name, "only meaningful in a loop");
+        return 1;
+    }
+    sh->flow = flow;
+    return 0;
+}
+
+static int bi_break(Shell *sh, int argc, char **argv) {
+    (void)argv;
+    return bi_flow(sh, argc, "break", FLOW_BREAK);
+}
+
+static int bi_continue(Shell *sh, int argc, char **argv) {
+    (void)argv;
+    return bi_flow(sh, argc, "continue", FLOW_CONTINUE);
+}
+
+static int bi_return(Shell *sh, int argc, char **argv) {
+    if (sh->func_depth <= 0) {
+        bi_err("return", "only meaningful in a function");
+        return 1;
+    }
+    if (argc > 2) {
+        bi_err("return", "too many arguments");
+        return EXIT_BAD_ARG;
+    }
+
+    int status = sh->last_status;
+    if (argc == 2) {
+        char *end = NULL;
+        long value = strtol(argv[1], &end, 10);
+        // Out of range is refused rather than masked, so 256 is never a 0.
+        if (end == argv[1] || *end != '\0' || value < 0 || value > STATUS_MAX) {
+            bi_err("return", "numeric argument required");
+            return EXIT_BAD_ARG;
+        }
+        status = (int)value;
+    }
+
+    sh->flow = FLOW_RETURN;
+    sh->flow_status = status;
+    return status;
+}
+
 static int bi_help(Shell *sh, int argc, char **argv) {
     (void)sh;
     (void)argc;
     (void)argv;
     fputs("nullsh builtins:\n"
           "  bg [%N]          resume a stopped job in the background\n"
+          "  break            leave the innermost loop\n"
           "  cd [dir]         change directory, no argument means $HOME,\n"
           "                   a single - means $OLDPWD\n"
+          "  continue         skip to the innermost loop's next iteration\n"
           "  emu ROM          run a chip-8 rom, esc quits\n"
           "  exit [status]    leave the shell, default is the last status\n"
           "  export NAME=VAL  set a variable for the shell and its children\n"
@@ -171,6 +227,7 @@ static int bi_help(Shell *sh, int argc, char **argv) {
           "                   --segments, --symbols, --all\n"
           "  jobs             list the background and stopped jobs\n"
           "  netmon IFACE     decode packets, --filter tcp|udp, --port N\n"
+          "  return [status]  leave a function, default is the last status\n"
           "  unset NAME       remove a variable from the environment\n",
           stdout);
     return 0;
@@ -352,7 +409,9 @@ typedef struct {
 
 static const BuiltinEntry BUILTINS[] = {
     {"bg", bi_bg},
+    {"break", bi_break},
     {"cd", bi_cd},
+    {"continue", bi_continue},
     {"emu", emu_builtin},
     {"exit", bi_exit},
     {"export", bi_export},
@@ -363,6 +422,7 @@ static const BuiltinEntry BUILTINS[] = {
     {"inspect", inspect_builtin},
     {"jobs", bi_jobs},
     {"netmon", netmon_builtin},
+    {"return", bi_return},
     {"unset", bi_unset},
 };
 

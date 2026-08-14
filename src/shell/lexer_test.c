@@ -102,6 +102,107 @@ TEST(each_operator_stands_alone) {
     token_list_free(&tl);
 }
 
+TEST(each_new_operator_stands_alone) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("&& || ; ( )", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 5);
+    ASSERT_KIND(&tl, 0, TOK_AND_IF);
+    ASSERT_KIND(&tl, 1, TOK_OR_IF);
+    ASSERT_KIND(&tl, 2, TOK_SEMI);
+    ASSERT_KIND(&tl, 3, TOK_LPAREN);
+    ASSERT_KIND(&tl, 4, TOK_RPAREN);
+    token_list_free(&tl);
+}
+
+TEST(and_if_wins_over_amp) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a&&b", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 3);
+    ASSERT_WORD(&tl, 0, "a");
+    ASSERT_KIND(&tl, 1, TOK_AND_IF);
+    ASSERT_WORD(&tl, 2, "b");
+    token_list_free(&tl);
+}
+
+TEST(a_lone_amp_is_still_amp) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a & b", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 3);
+    ASSERT_WORD(&tl, 0, "a");
+    ASSERT_KIND(&tl, 1, TOK_AMP);
+    ASSERT_WORD(&tl, 2, "b");
+    token_list_free(&tl);
+}
+
+TEST(three_amps_are_and_if_then_amp) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("&&&", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 2);
+    ASSERT_KIND(&tl, 0, TOK_AND_IF);
+    ASSERT_KIND(&tl, 1, TOK_AMP);
+    token_list_free(&tl);
+}
+
+TEST(or_if_wins_over_pipe) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a||b", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 3);
+    ASSERT_WORD(&tl, 0, "a");
+    ASSERT_KIND(&tl, 1, TOK_OR_IF);
+    ASSERT_WORD(&tl, 2, "b");
+    token_list_free(&tl);
+}
+
+TEST(three_pipes_are_or_if_then_pipe) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("|||", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 2);
+    ASSERT_KIND(&tl, 0, TOK_OR_IF);
+    ASSERT_KIND(&tl, 1, TOK_PIPE);
+    token_list_free(&tl);
+}
+
+TEST(semi_splits_glued_words) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a;b", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 3);
+    ASSERT_WORD(&tl, 0, "a");
+    ASSERT_KIND(&tl, 1, TOK_SEMI);
+    ASSERT_WORD(&tl, 2, "b");
+    token_list_free(&tl);
+}
+
+// There is no case statement, so ;; is nothing but two separators.
+TEST(double_semi_is_two_semis) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a;;b", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 4);
+    ASSERT_WORD(&tl, 0, "a");
+    ASSERT_KIND(&tl, 1, TOK_SEMI);
+    ASSERT_KIND(&tl, 2, TOK_SEMI);
+    ASSERT_WORD(&tl, 3, "b");
+    token_list_free(&tl);
+}
+
+TEST(parens_split_a_function_header) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("f()", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 3);
+    ASSERT_WORD(&tl, 0, "f");
+    ASSERT_KIND(&tl, 1, TOK_LPAREN);
+    ASSERT_KIND(&tl, 2, TOK_RPAREN);
+    token_list_free(&tl);
+}
+
+TEST(parens_are_literal_inside_quotes) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("'a;b&&c(d)'", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 1);
+    ASSERT_NSEGS(&tl, 0, 1);
+    ASSERT_SEG(&tl, 0, 0, "a;b&&c(d)", false);
+    token_list_free(&tl);
+}
+
 TEST(append_wins_over_two_single_redirects) {
     TokenList tl = tl_zero();
     ASSERT_EQ(lexer_scan("a>>b", &tl), NSH_OK);
@@ -392,49 +493,184 @@ TEST(empty_quotes_glued_inside_a_word) {
     token_list_free(&tl);
 }
 
-TEST(hash_and_dollar_are_ordinary_word_text) {
+TEST(a_newline_separates_two_words) {
     TokenList tl = tl_zero();
-    ASSERT_EQ(lexer_scan("echo # $HOME", &tl), NSH_OK);
+    ASSERT_EQ(lexer_scan("a\nb", &tl), NSH_OK);
     ASSERT_EQ(tl.tokens.len, 3);
-    ASSERT_WORD(&tl, 0, "echo");
-    ASSERT_WORD(&tl, 1, "#");
-    ASSERT_WORD(&tl, 2, "$HOME");
+    ASSERT_WORD(&tl, 0, "a");
+    ASSERT_KIND(&tl, 1, TOK_NEWLINE);
+    ASSERT_WORD(&tl, 2, "b");
     token_list_free(&tl);
 }
 
-TEST(unterminated_single_quote_is_a_syntax_error) {
+// Blank lines are real tokens: the parser, not the lexer, ignores them.
+TEST(blank_lines_each_emit_a_newline) {
     TokenList tl = tl_zero();
-    ASSERT_EQ(lexer_scan("echo 'abc", &tl), NSH_ERR_SYNTAX);
+    ASSERT_EQ(lexer_scan("\n \n", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 2);
+    ASSERT_KIND(&tl, 0, TOK_NEWLINE);
+    ASSERT_KIND(&tl, 1, TOK_NEWLINE);
+    token_list_free(&tl);
+}
+
+TEST(a_newline_after_an_operator_is_its_own_token) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a &&\n b", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 4);
+    ASSERT_WORD(&tl, 0, "a");
+    ASSERT_KIND(&tl, 1, TOK_AND_IF);
+    ASSERT_KIND(&tl, 2, TOK_NEWLINE);
+    ASSERT_WORD(&tl, 3, "b");
+    token_list_free(&tl);
+}
+
+TEST(redir_err_starts_a_word_after_a_newline) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a\n2>f", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 4);
+    ASSERT_WORD(&tl, 0, "a");
+    ASSERT_KIND(&tl, 1, TOK_NEWLINE);
+    ASSERT_KIND(&tl, 2, TOK_REDIR_ERR);
+    ASSERT_WORD(&tl, 3, "f");
+    token_list_free(&tl);
+}
+
+TEST(a_newline_inside_single_quotes_is_word_text) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("'a\nb'", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 1);
+    ASSERT_NSEGS(&tl, 0, 1);
+    ASSERT_SEG(&tl, 0, 0, "a\nb", false);
+    token_list_free(&tl);
+}
+
+TEST(a_newline_inside_double_quotes_is_word_text) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("\"a\nb\" c", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 2);
+    ASSERT_NSEGS(&tl, 0, 1);
+    ASSERT_SEG(&tl, 0, 0, "a\nb", true);
+    ASSERT_WORD(&tl, 1, "c");
+    token_list_free(&tl);
+}
+
+// No line continuation: the backslash is literal and the newline still splits.
+TEST(backslash_before_a_newline_does_not_join_lines) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a\\\nb", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 3);
+    ASSERT_WORD(&tl, 0, "a\\");
+    ASSERT_KIND(&tl, 1, TOK_NEWLINE);
+    ASSERT_WORD(&tl, 2, "b");
+    token_list_free(&tl);
+}
+
+TEST(a_full_line_comment_yields_no_tokens) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("# echo hi | wc", &tl), NSH_OK);
     ASSERT_EQ(tl.tokens.len, 0);
     ASSERT_TRUE(tl.tokens.items != NULL);
     token_list_free(&tl);
 }
 
-TEST(unterminated_double_quote_is_a_syntax_error) {
+TEST(a_comment_after_a_word_drops_the_rest) {
     TokenList tl = tl_zero();
-    ASSERT_EQ(lexer_scan("echo \"abc", &tl), NSH_ERR_SYNTAX);
+    ASSERT_EQ(lexer_scan("echo #x", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 1);
+    ASSERT_WORD(&tl, 0, "echo");
+    token_list_free(&tl);
+}
+
+TEST(a_comment_after_an_operator_drops_the_rest) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a |# b", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 2);
+    ASSERT_WORD(&tl, 0, "a");
+    ASSERT_KIND(&tl, 1, TOK_PIPE);
+    token_list_free(&tl);
+}
+
+TEST(a_hash_inside_a_word_is_ordinary_text) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a#b c", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 2);
+    ASSERT_WORD(&tl, 0, "a#b");
+    ASSERT_WORD(&tl, 1, "c");
+    token_list_free(&tl);
+}
+
+TEST(a_quoted_hash_is_not_a_comment) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("echo '#x' \\#y", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 3);
+    ASSERT_WORD(&tl, 0, "echo");
+    ASSERT_NSEGS(&tl, 1, 1);
+    ASSERT_SEG(&tl, 1, 0, "#x", false);
+    ASSERT_WORD(&tl, 2, "#y");
+    token_list_free(&tl);
+}
+
+TEST(a_comment_ends_at_the_newline) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a # c\nb", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 3);
+    ASSERT_WORD(&tl, 0, "a");
+    ASSERT_KIND(&tl, 1, TOK_NEWLINE);
+    ASSERT_WORD(&tl, 2, "b");
+    token_list_free(&tl);
+}
+
+TEST(dollar_is_ordinary_word_text) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("echo $HOME", &tl), NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 2);
+    ASSERT_WORD(&tl, 0, "echo");
+    ASSERT_WORD(&tl, 1, "$HOME");
+    token_list_free(&tl);
+}
+
+TEST(unterminated_single_quote_is_incomplete) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("echo 'abc", &tl), NSH_ERR_INCOMPLETE);
     ASSERT_EQ(tl.tokens.len, 0);
+    ASSERT_TRUE(tl.tokens.items != NULL);
+    token_list_free(&tl);
+}
+
+TEST(unterminated_double_quote_is_incomplete) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("echo \"abc", &tl), NSH_ERR_INCOMPLETE);
+    ASSERT_EQ(tl.tokens.len, 0);
+    ASSERT_TRUE(tl.tokens.items != NULL);
     token_list_free(&tl);
 }
 
 // The backslash consumes the last quote, so the run never closes.
 TEST(escaped_closing_double_quote_leaves_it_unterminated) {
     TokenList tl = tl_zero();
-    ASSERT_EQ(lexer_scan("\"a\\\"", &tl), NSH_ERR_SYNTAX);
+    ASSERT_EQ(lexer_scan("\"a\\\"", &tl), NSH_ERR_INCOMPLETE);
     ASSERT_EQ(tl.tokens.len, 0);
     token_list_free(&tl);
 }
 
-TEST(syntax_error_discards_earlier_tokens) {
+// An unterminated quote spanning lines is still unfinished, not wrong.
+TEST(unterminated_quote_across_a_newline_is_incomplete) {
     TokenList tl = tl_zero();
-    ASSERT_EQ(lexer_scan("a b c | d 'oops", &tl), NSH_ERR_SYNTAX);
+    ASSERT_EQ(lexer_scan("echo 'abc\ndef", &tl), NSH_ERR_INCOMPLETE);
+    ASSERT_EQ(tl.tokens.len, 0);
+    token_list_free(&tl);
+}
+
+TEST(incomplete_discards_earlier_tokens) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("a b c | d 'oops", &tl), NSH_ERR_INCOMPLETE);
     ASSERT_EQ(tl.tokens.len, 0);
     token_list_free(&tl);
 }
 
 TEST(scanning_again_after_an_error_works) {
     TokenList tl = tl_zero();
-    ASSERT_EQ(lexer_scan("'oops", &tl), NSH_ERR_SYNTAX);
+    ASSERT_EQ(lexer_scan("'oops", &tl), NSH_ERR_INCOMPLETE);
     ASSERT_EQ(lexer_scan("ok", &tl), NSH_OK);
     ASSERT_EQ(tl.tokens.len, 1);
     ASSERT_WORD(&tl, 0, "ok");
@@ -487,6 +723,27 @@ TEST(torture_line_mixes_every_rule) {
     ASSERT_KIND(&tl, 7, TOK_PIPE);
     ASSERT_WORD(&tl, 8, "wc");
     ASSERT_KIND(&tl, 9, TOK_AMP);
+    token_list_free(&tl);
+}
+
+TEST(multi_line_buffer_mixes_every_new_rule) {
+    TokenList tl = tl_zero();
+    ASSERT_EQ(lexer_scan("if a && b; then # go\n  echo \"x\ny\"\nfi\n", &tl),
+              NSH_OK);
+    ASSERT_EQ(tl.tokens.len, 12);
+    ASSERT_WORD(&tl, 0, "if");
+    ASSERT_WORD(&tl, 1, "a");
+    ASSERT_KIND(&tl, 2, TOK_AND_IF);
+    ASSERT_WORD(&tl, 3, "b");
+    ASSERT_KIND(&tl, 4, TOK_SEMI);
+    ASSERT_WORD(&tl, 5, "then");
+    ASSERT_KIND(&tl, 6, TOK_NEWLINE);
+    ASSERT_WORD(&tl, 7, "echo");
+    ASSERT_NSEGS(&tl, 8, 1);
+    ASSERT_SEG(&tl, 8, 0, "x\ny", true);
+    ASSERT_KIND(&tl, 9, TOK_NEWLINE);
+    ASSERT_WORD(&tl, 10, "fi");
+    ASSERT_KIND(&tl, 11, TOK_NEWLINE);
     token_list_free(&tl);
 }
 
