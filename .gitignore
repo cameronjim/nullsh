@@ -4,3 +4,5 @@ build/
 /notes.md
 # local claude code settings
 /.claude/
+claude-docs/
+HANDOFF.md
